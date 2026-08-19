@@ -1,0 +1,36 @@
+---
+# Ordered bring-up of the Mayyhem SCCM lab.
+#
+# Play ordering mirrors the depends_on DAG in new-config.yml. Split into
+# numbered phase files so each phase can be run and verified in isolation.
+#
+# Skip a phase by commenting its import_playbook line. Run a single phase
+# directly by ansible-playbook -i inventory.yml <NN_phase.yml>.
+#
+# ps1-dev is intentionally left in the inventory but is expected to fail
+# on any phase that touches it until its Windows 11 template's VMware
+# Tools are working. Use --limit '!ps1-dev' if a phase treats a failure
+# there as fatal.
+
+- import_playbook: 00_connectivity.yml
+
+# TODO: subsequent phases — kept as an outline until 00_connectivity is
+# green. Each becomes its own NN_phase.yml file.
+#
+# 10_windows_base.yml   — install_adcs on dc (promotes to DC); windows_base
+#                          on every other host in parallel; disable_firewall.
+# 20_prep_site_systems.yml — prep_dp on ps1-dp, prep_mp on ps1-mp,
+#                             prep_sms on ps1-sms, prep_siteserver on ps1-pss
+#                             (and later cas-pss); create_contentlib_share on
+#                             ps1-lib; set_effective_hostnames per site server.
+# 30_install_databases.yml — install_site_database on ps1-db and cas-db
+#                             (add_pss_to_admins is a prerequisite for each).
+# 40_install_ps1.yml    — install_primary_site on ps1-pss (Standalone template,
+#                          site code PS1); install_sms on ps1-sms; then
+#                          install_passive_site_server, install_secondary_site.
+# 50_extend_to_cas.yml  — install_primary_site on cas-pss with
+#                          ExtendPrimaryToCAS.ini.j2 (Action=InstallCAS,
+#                          site code CAS, joins the ps1-pss primary).
+# 60_verify.yml         — health checks: SQL listener, CM DBs, CAS/PS1
+#                          hierarchy state, boundary group membership,
+#                          discovery methods.

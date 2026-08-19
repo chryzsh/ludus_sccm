@@ -1,0 +1,21 @@
+---
+# Non-sensitive defaults for the vSphere port. Values from Mayyhem's
+# new-config.yml `defaults` block, minus anything env-specific.
+#
+# Sensitive values (ansible_password, defaults.ad_domain_admin_password)
+# live in group_vars/all.local.yml (gitignored). See the README.
+
+# Domain identity — matches Mayyhem upstream. If you rename the domain,
+# every VM's guest customization dns_suffix and the DC's promotion has
+# to change in lockstep. Leave alone unless deliberately deviating.
+ludus_domain_fqdn: mayyhem.com
+ludus_domain_netbios_name: MAYYHEM
+
+# The DC's inventory hostname. Roles that need to hit AD delegate to
+# {{ ludus_dc_vm_name }} so this must match the inventory host key.
+ludus_dc_vm_name: dc
+
+# Controller-side download cache. Ludus uses /opt/ludus/resources/sccm on
+# the Ludus host; we run Ansible from wherever, so cache locally.
+# Referenced by prep_siteserver's download_file.yml.
+ludus_install_directory: /tmp/ludus-sccm-cache

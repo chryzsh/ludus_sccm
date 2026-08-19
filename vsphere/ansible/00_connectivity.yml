@@ -1,0 +1,18 @@
+---
+# Phase 0 — verify WinRM reaches every VM.
+#
+# Run before any state-changing playbook. If any host fails here, fix
+# credentials / WinRM / networking before proceeding — subsequent plays
+# will fail in more confusing ways otherwise.
+#
+# Excludes ps1-dev by default because the Windows 11 template's VMware
+# Tools don't respond, and terraform's guest customization therefore
+# didn't run. Remove --limit '!ps1-dev' once that template is fixed
+# and ps1-dev has been tainted + re-applied.
+
+- name: Verify WinRM connectivity
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Ping via WinRM
+      ansible.windows.win_ping:

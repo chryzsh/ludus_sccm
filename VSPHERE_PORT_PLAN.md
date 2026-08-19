@@ -139,6 +139,16 @@ Based on documentation review; the autosave is authoritative:
 - `depends_on`: PS2's `install_primary_site` must wait on CAS-PSS `install_primary_site`. Fix §2.1 and §2.2 first.
 - Extend reciprocal local-admin grants (`ps2-pss$` on `cas-pss` and vice versa).
 
+## Known state / deferred items
+
+- **`ps1-dev` (Win11 client) — terraform-provisioned but customization failed.** VMware Tools in the operator's `windows-11-template` isn't responding, so vSphere never confirmed guest customization completion; the VM is powered on but has no network config or reachable IP. Terraform state records the resource. It is not needed for the CAS or PS1 install (workstation is a domain member, not part of the SCCM install DAG). After the operator fixes the Win11 template, taint + reapply just that one resource:
+  ```
+  terraform taint 'vsphere_virtual_machine.mayyhem_vm["ps1-dev"]'
+  terraform plan  -var-file=~/.mayyhem-sccm/vsphere.tfvars -out=plan.tfplan
+  terraform apply plan.tfplan
+  ```
+  Verify the plan shows exactly one destroy + one create for `ps1-dev` and nothing else.
+
 ## 4. Sequenced work plan
 
 1. **Confirm vSphere targets** — cluster, datastore, templates, port-group name, IP range. All values stay in the local plan + tfvars.

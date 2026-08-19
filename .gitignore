@@ -16,9 +16,11 @@ vsphere/terraform/override.tf
 vsphere/terraform/override.tf.json
 vsphere/terraform/*_override.tf
 vsphere/terraform/*_override.tf.json
-vsphere/ansible/inventory.generated.*
-vsphere/ansible/group_vars/vcenter.yml
+vsphere/ansible/inventory.yml
+vsphere/ansible/group_vars/*.local.yml
+vsphere/terraform/plan.tfplan
 
 # Local-only environment specifics (target vCenter, IPs, template names, etc.)
 ENVIRONMENT.local.md
 *.local.md
+*.local.yml
