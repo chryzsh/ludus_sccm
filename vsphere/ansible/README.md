@@ -7,8 +7,9 @@ Runs the Mayyhem SCCM collection against the 13 VMs provisioned by `../terraform
 - `ansible.cfg` — points at the generated `inventory.yml`, WinRM defaults, YAML stdout.
 - `sync_inventory.py` — regenerates `inventory.yml` from `../terraform/terraform.tfstate`. Read-only against state; safe to rerun.
 - `inventory.yml` — **generated, gitignored** (contains real IPs). Regenerate with `python3 sync_inventory.py`.
-- `group_vars/all.yml` — non-sensitive defaults (domain, cache paths, DC hostname).
-- `group_vars/all.local.yml` — **local, gitignored, mode 0600.** Sensitive values: `ansible_password`, `defaults.ad_domain_admin*`.
+- `group_vars/all/main.yml` — non-sensitive defaults (domain, cache paths, DC hostname). Auto-loaded.
+- `group_vars/all/local.yml` — **local, gitignored, mode 0600.** Sensitive values: `ansible_password`, `defaults.ad_domain_admin*`. Auto-loaded from the `all/` directory alongside `main.yml`.
+- `run.sh` — wrapper around `ansible-playbook` that prepends RFC1918 CIDRs to `NO_PROXY` so pywinrm doesn't route lab WinRM through a corporate outbound proxy. Use this instead of calling `ansible-playbook` directly.
 - `00_connectivity.yml` — WinRM ping against all hosts. Run first.
 - `site.yml` — ordered spine; imports each numbered phase playbook. Phases beyond 00 are stubs pending §4 execution.
 
@@ -32,7 +33,7 @@ Runs the Mayyhem SCCM collection against the 13 VMs provisioned by `../terraform
 
 3. **Terraform state present** (`../terraform/terraform.tfstate`) — this feeds the inventory sync.
 
-4. **Populate `group_vars/all.local.yml`** with real credentials — the file was created with a `CHANGE_ME` placeholder for `defaults.ad_domain_admin_password`.
+4. **Populate `group_vars/all/local.yml`** with real credentials — the file was created with a `CHANGE_ME` placeholder for `defaults.ad_domain_admin_password`.
 
 ## Usage
 
@@ -41,11 +42,11 @@ cd vsphere/ansible
 python3 sync_inventory.py                # (re)generate inventory.yml
 
 # Connectivity first — do not skip this.
-ansible-playbook 00_connectivity.yml --limit '!ps1-dev'
+./run.sh 00_connectivity.yml --limit '!ps1-dev'
 
 # Once phases are written:
-# ansible-playbook site.yml
-# ansible-playbook 10_windows_base.yml    # single phase
+# ./run.sh site.yml
+# ./run.sh 10_windows_base.yml    # single phase
 ```
 
 ## Notes on ps1-dev
