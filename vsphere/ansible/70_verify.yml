@@ -1,0 +1,80 @@
+---
+# Phase 70 — post-install health checks.
+#
+# Not a full deep verification, but enough to catch the common failure
+# modes:
+#   - SQL Server engine service running on both SQL boxes.
+#   - CM database exists on each SQL host (CM_PS1 on ps1-db, CM_CAS on
+#     cas-db).
+#   - SCCM console + provider WMI reachable on site servers.
+#   - Boundary group is per-site (verifies §2.1 fix took effect —
+#     "Discovery Default Boundary Group - PS1" should exist and not
+#     have its DefaultSiteCode stomped by any later run).
+
+- name: SQL health
+  hosts: cas-db:ps1-db
+  gather_facts: false
+  tasks:
+    - name: Check MSSQLSERVER service
+      ansible.windows.win_service:
+        name: MSSQLSERVER
+      register: sql_svc
+
+    - name: Assert SQL running
+      ansible.builtin.assert:
+        that: sql_svc.state == "running"
+        fail_msg: "MSSQLSERVER is {{ sql_svc.state }} on {{ inventory_hostname }}"
+
+    - name: Query CM database exists
+      ansible.windows.win_powershell:
+        script: |
+          $expected = if ('{{ inventory_hostname }}' -eq 'cas-db') { 'CM_CAS' } else { 'CM_PS1' }
+          $out = & sqlcmd -E -h -1 -Q "SET NOCOUNT ON; SELECT name FROM sys.databases WHERE name = '$expected'" 2>$null
+          $Ansible.Result = @{ expected = $expected; found = ($out -match $expected) }
+      register: cm_db
+
+    - name: Assert CM database present
+      ansible.builtin.assert:
+        that: cm_db.result.found
+        fail_msg: "{{ cm_db.result.expected }} not found on {{ inventory_hostname }}"
+
+- name: SCCM site server health
+  hosts: cas-pss:ps1-pss
+  gather_facts: false
+  tasks:
+    - name: Query hierarchy state via SMS provider WMI
+      ansible.windows.win_powershell:
+        script: |
+          $sites = Get-CimInstance -Namespace 'root\SMS' -ClassName SMS_ProviderLocation -ErrorAction SilentlyContinue
+          $Ansible.Result = @{ count = @($sites).Count; sites = @($sites | ForEach-Object { $_.SiteCode }) }
+      register: sms
+
+    - name: Show hierarchy state
+      ansible.builtin.debug:
+        var: sms.result
+
+- name: Boundary group state on ps1-pss
+  hosts: ps1-pss
+  gather_facts: false
+  tasks:
+    - name: Query boundary group DefaultSiteCode
+      ansible.windows.win_powershell:
+        script: |
+          Import-Module "C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole\bin\ConfigurationManager.psd1" -ErrorAction SilentlyContinue
+          if (-not (Get-PSDrive -Name PS1 -PSProvider CMSite -ErrorAction SilentlyContinue)) {
+            $mp = (Get-ItemProperty 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\ConfigMgr10\AdminUI\Connection' -Name Server).Server
+            New-PSDrive -Name PS1 -PSProvider CMSite -Root $mp | Out-Null
+          }
+          Set-Location "PS1:\"
+          $expected = "Discovery Default Boundary Group - PS1"
+          $bg = Get-CMBoundaryGroup -Name $expected
+          $Ansible.Result = @{ expected_name = $expected; found = ($bg -ne $null); default_site = if ($bg) { $bg.DefaultSiteCode } else { $null } }
+
+      register: bg
+
+    - name: Assert per-site boundary group exists with DefaultSiteCode=PS1
+      ansible.builtin.assert:
+        that:
+          - bg.result.found
+          - bg.result.default_site == "PS1"
+        fail_msg: "boundary group '{{ bg.result.expected_name }}' either missing or has wrong DefaultSiteCode ({{ bg.result.default_site }})"

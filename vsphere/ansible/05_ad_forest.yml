@@ -51,16 +51,17 @@
       delegate_to: localhost
       when: not domain_state.result.in_domain
 
-    # Active Directory Web Services (port 9389) starts a bit after WinRM.
-    # microsoft.ad.user talks to it via the AD PowerShell module, so
-    # gate on it being up before creating users.
-    - name: Wait for ADWS (port 9389) to be listening
-      ansible.builtin.wait_for:
-        host: "{{ hostvars['dc'].ansible_host }}"
+    # Active Directory Web Services (port 9389) starts a bit after WinRM
+    # on a freshly-promoted DC. Wait for it locally on the DC before
+    # creating users. Checking 9389 from the controller doesn't work
+    # here — Windows Firewall is still on (windows_base disables it,
+    # but that runs in phase 10) and blocks 9389 externally.
+    - name: Wait for ADWS to be listening locally on the DC
+      ansible.windows.win_wait_for:
+        host: 127.0.0.1
         port: 9389
         timeout: 300
         state: started
-      delegate_to: localhost
 
     - name: Create domain admin user
       microsoft.ad.user:
