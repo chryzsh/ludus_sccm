@@ -1,0 +1,20 @@
+---
+# Phase 10 — run windows_base on every reachable VM.
+#
+# windows_base does: enable Windows Update service, disable firewall on
+# all profiles, disable Defender real-time protection, set auto-logon to
+# the domain admin, install WebDAV (server VMs), enable WebClient service.
+#
+# The auto-logon registry write uses MAYYHEM\domainadmin — that user is
+# created in phase 05. If phase 05 hasn't run, auto-logon fails silently
+# on reboot (no functional impact — just no automatic login). Everything
+# else in windows_base is domain-independent.
+#
+# Serialized firewall/Defender changes touch a completion marker at
+# C:\windows_base_completed.marker; re-running is a no-op once set.
+
+- name: windows_base on all VMs
+  hosts: all
+  gather_facts: false
+  roles:
+    - role: mayyhem.ludus_sccm.windows_base

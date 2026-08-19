@@ -1,0 +1,16 @@
+---
+# Phase 20 — install AD Certificate Services on the DC.
+#
+# Wraps mayyhem.ludus_sccm.install_adcs. That role installs an Enterprise
+# Root CA with common name "{{ ludus_domain_netbios_name }}-CA" using the
+# domain admin credential.
+#
+# Prerequisites (verified by earlier phases): DC is a DC, forest exists,
+# domainadmin is in Enterprise Admins. Runs a reboot at the end via
+# the role's win_reboot task.
+
+- name: install_adcs on DC
+  hosts: dc
+  gather_facts: false
+  roles:
+    - role: mayyhem.ludus_sccm.install_adcs

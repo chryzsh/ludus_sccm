@@ -1,0 +1,65 @@
+---
+# Phase 5 — create the AD forest and the domain admin user.
+#
+# Mayyhem's collection assumes both are already done (Ludus provisions
+# the DC and creates the `domainadmin` user via its own platform layer).
+# For the vSphere port we do it here in ansible.
+#
+# After this play:
+#   - dc is promoted, forest {{ ludus_domain_fqdn }} exists.
+#   - `{{ ludus_domain_netbios_name }}\{{ defaults.ad_domain_admin }}`
+#     exists with the password from defaults.ad_domain_admin_password.
+#   - That user is in Domain Admins, Enterprise Admins, Schema Admins.
+#     (The collection's install_adcs role requires Enterprise Admin to
+#     install an Enterprise Root CA.)
+#
+# WinRM auth switches from the local Administrator to the same account
+# post-promotion (Administrator becomes MAYYHEM\Administrator on the DC).
+# The password does not change, so the ansible_password from group_vars
+# keeps working without any inventory rewrite.
+
+- name: Promote DC and create domain admin
+  hosts: dc
+  gather_facts: false
+  vars:
+    dsrm_password: "{{ ansible_password }}"  # reuse local admin password for DSRM
+  tasks:
+    - name: Query current domain membership
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Result = @{
+            in_domain = (Get-CimInstance Win32_ComputerSystem).PartOfDomain
+            domain    = (Get-CimInstance Win32_ComputerSystem).Domain
+          }
+      register: domain_state
+
+    - name: Create AD forest
+      microsoft.ad.domain:
+        dns_domain_name: "{{ ludus_domain_fqdn }}"
+        domain_netbios_name: "{{ ludus_domain_netbios_name }}"
+        safe_mode_password: "{{ dsrm_password }}"
+        install_dns: true
+        reboot: true
+      when: not domain_state.result.in_domain
+
+    - name: Wait for WinRM to come back after promotion + reboot
+      ansible.builtin.wait_for:
+        host: "{{ hostvars['dc'].ansible_host }}"
+        port: 5985
+        timeout: 300
+        state: started
+      delegate_to: localhost
+      when: not domain_state.result.in_domain
+
+    - name: Create domain admin user
+      microsoft.ad.user:
+        name: "{{ defaults.ad_domain_admin }}"
+        password: "{{ defaults.ad_domain_admin_password }}"
+        password_never_expires: true
+        state: present
+        groups:
+          set:
+            - Domain Admins
+            - Enterprise Admins
+            - Schema Admins
+        path: "CN=Users,DC={{ ludus_domain_fqdn.split('.') | join(',DC=') }}"

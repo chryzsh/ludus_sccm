@@ -20,7 +20,8 @@ vsphere/ansible/inventory.yml
 vsphere/ansible/group_vars/*.local.yml
 vsphere/ansible/group_vars/*/local.yml
 vsphere/ansible/group_vars/*/*.local.yml
-vsphere/terraform/plan.tfplan
+vsphere/terraform/*.tfplan
+vsphere/terraform/.terraform.tfstate.lock.info
 
 # Local-only environment specifics (target vCenter, IPs, template names, etc.)
 ENVIRONMENT.local.md
