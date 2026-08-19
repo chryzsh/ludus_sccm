@@ -38,6 +38,21 @@ Replace the tokens with the operator's real values (the operator's local `VSPHER
 
 **If a leak happens**: force-push is not enough (mirrors and GitHub caches persist). Rotate the exposed credentials, delete the offending refs from GitHub, and treat the fork as compromised until credentials rotate.
 
+## VM safety in a shared vCenter (CRITICAL)
+
+The target vCenter hosts multiple independent labs and personal VMs. **Never destroy or overwrite any VM.** Applies to terraform, govc, PowerCLI, or any other path.
+
+Hard rules:
+
+- All lab VMs get a distinct name prefix via `range_id` / `lab_prefix` variable, and a distinct vSphere folder path. No name collisions with existing VMs.
+- `for_each` over `local.vm_config` only. Never `count = length(...)` — index shifts silently reassign resource identity across applies.
+- Never write `data "vsphere_virtual_machine"` against anything except the templates. Referencing a live VM by name via a data source is a footgun.
+- Never run `terraform import`. State moves are a conversation, not an autonomous action.
+- Never run `terraform destroy` autonomously. Always run `terraform plan -out=<file>` first, surface the summary, and pause for explicit operator go-ahead.
+- On any plan that shows `will be destroyed` or `-/+ must be replaced`, STOP. Confirm the resource was created by this workflow before proceeding. Template UUID drift is a common cause of unexpected replacement — the port's terraform includes `lifecycle { ignore_changes = [clone[0].template_uuid] }` to prevent that.
+
+If a plan wants to replace or destroy anything unexpected, the correct response is to stop and ask, not to `-refresh=false` or `--target` around the surprise.
+
 ## Workflow
 
 1. Follow the active written plan when one exists (`VSPHERE_PORT_PLAN.md`).
