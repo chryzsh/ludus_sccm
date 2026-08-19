@@ -2,3 +2,22 @@
 .vscode
 synzack*.tar.gz
 mayyhem*.tar.gz
+
+# vSphere port — NEVER commit any file that identifies the target vCenter,
+# credentials, port group / VLAN name, datacenter / cluster / datastore names,
+# folder paths, IP ranges, or gateway. Keep those in an out-of-tree tfvars file.
+vsphere/terraform/*.tfvars
+vsphere/terraform/*.tfvars.json
+vsphere/terraform/.terraform/
+vsphere/terraform/.terraform.lock.hcl
+vsphere/terraform/terraform.tfstate*
+vsphere/terraform/crash.log
+vsphere/terraform/override.tf
+vsphere/terraform/override.tf.json
+vsphere/terraform/*_override.tf
+vsphere/terraform/*_override.tf.json
+vsphere/ansible/inventory.generated.*
+vsphere/ansible/group_vars/vcenter.yml
+
+# Local-only working copies of the port plan (the committed version is scrubbed)
+VSPHERE_PORT_PLAN.local.md
