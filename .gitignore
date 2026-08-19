@@ -19,5 +19,6 @@ vsphere/terraform/*_override.tf.json
 vsphere/ansible/inventory.generated.*
 vsphere/ansible/group_vars/vcenter.yml
 
-# Local-only working copies of the port plan (the committed version is scrubbed)
-VSPHERE_PORT_PLAN.local.md
+# Local-only environment specifics (target vCenter, IPs, template names, etc.)
+ENVIRONMENT.local.md
+*.local.md

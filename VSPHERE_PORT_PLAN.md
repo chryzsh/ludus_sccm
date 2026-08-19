@@ -1,6 +1,6 @@
 # ludus_sccm_mayyhem → vSphere port + second-primary answer
 
-Public plan for a vSphere provider path alongside the existing Ludus/Proxmox collection. All target-environment specifics (vCenter server, datacenter, cluster, datastore, port-group / VLAN name, IP ranges, gateway, folder paths, credentials) live in the operator's local `VSPHERE_PORT_PLAN.local.md` (gitignored) and in an out-of-tree `~/.mayyhem-sccm/vsphere.tfvars` (also gitignored). See `AGENTS.md` for the full secrets policy.
+Public plan for a vSphere provider path alongside the existing Ludus/Proxmox collection. All target-environment specifics (vCenter server, datacenter, cluster, datastore, port-group / VLAN name, IP ranges, gateway, folder paths, credentials) live in the operator's local `ENVIRONMENT.local.md` (gitignored) and in an out-of-tree `~/.mayyhem-sccm/vsphere.tfvars` (also gitignored). See `AGENTS.md` for the full secrets policy.
 
 Reference pattern: a working vSphere port already exists for the `GOAD` (Game of Active Directory) lab; that provider's shape is what this port mirrors.
 
@@ -167,7 +167,7 @@ Working from a personal fork; `origin` points at the fork, `upstream` at the ori
 ### 6.2 Secrets policy (summary — full policy in AGENTS.md)
 
 - No target-environment specifics may be committed to this fork: vCenter server, credentials, VLAN / port-group name, datacenter / cluster / datastore names, folder paths, real IPs / gateways / subnets, or operator-owned domain names.
-- Real values live in `~/.mayyhem-sccm/vsphere.tfvars` (external) and in `VSPHERE_PORT_PLAN.local.md` (gitignored).
+- Real values live in `~/.mayyhem-sccm/vsphere.tfvars` (external) and in `ENVIRONMENT.local.md` (gitignored).
 - Committed files use `variable`s with no defaults, or placeholder examples (`vcenter.example`, RFC1918 documentation blocks).
 - `.gitignore` blocks `*.tfvars`, `terraform.tfstate*`, `.terraform*`, generated inventories, and the local plan.
 - Pre-push scan (see `AGENTS.md`) is mandatory.

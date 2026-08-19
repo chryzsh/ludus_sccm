@@ -23,7 +23,7 @@ This is a fork of `Mayyhem/ludus_sccm` being extended with a vSphere provider pa
 - Real IP addresses, subnets, gateways, DNS servers, or netmasks used in the target environment.
 - Domain names owned by the operator (as opposed to the lab's own `mayyhem.com`).
 
-**Where these values must live instead**: an out-of-tree tfvars file (default location `~/.mayyhem-sccm/vsphere.tfvars`), or ansible group_vars files whose paths are gitignored (see `.gitignore`).
+**Where these values must live instead**: `ENVIRONMENT.local.md` at the repo root (gitignored, single source of truth for target-environment specifics), plus an out-of-tree tfvars file (default location `~/.mayyhem-sccm/vsphere.tfvars`) for terraform to consume at plan/apply time. Ansible group_vars files that would contain these values are also gitignored (see `.gitignore`).
 
 **What CAN be committed**:
 - Terraform variable declarations with no defaults, or with generic placeholder defaults (`"CHANGE_ME"`, `"vcenter.example"`, `10.0.0.0/24`).
@@ -34,7 +34,7 @@ This is a fork of `Mayyhem/ludus_sccm` being extended with a vSphere provider pa
 ```
 git ls-files -z | xargs -0 grep -lE '<partial-vcenter-fqdn>|<datacenter-token>|<real-ip-prefix>|<port-group-name>' || echo "clean"
 ```
-Replace the tokens with the operator's real values (the operator's local `VSPHERE_PORT_PLAN.local.md` — gitignored — is where those real values are recorded for reference). If any file matches, do not push; move the offending values into the tfvars file and re-scan.
+Replace the tokens with the operator's real values (the operator's local `VSPHERE_PORT_PLAN.local.md` — gitignored — is where those real values are recorded for reference). If any file matches, do not push; move the offending values into `ENVIRONMENT.local.md` or the tfvars file, and re-scan.
 
 **If a leak happens**: force-push is not enough (mirrors and GitHub caches persist). Rotate the exposed credentials, delete the offending refs from GitHub, and treat the fork as compromised until credentials rotate.
 
