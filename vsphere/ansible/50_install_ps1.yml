@@ -1,0 +1,50 @@
+---
+# Phase 50 — install SCCM on PS1.
+#
+# install_primary_site on ps1-pss:
+#   Extends AD schema (extadsch.exe), runs unattended setup.exe (with
+#   ChildSiteConfigMgrSetup.ini.j2 per host_vars — but CAS doesn't
+#   exist yet so setup degrades to a standalone install). Then runs
+#   cm_accounts / config_naa / client_push / discovery_methods /
+#   config_pxe.yaml. Includes retry-on-stall logic (3 attempts with
+#   reboot between).
+#
+# install_sms on ps1-sms:
+#   Remote SMS provider install: setup.exe /SDKINST <fqdn>.
+#
+# install_passive_site_server on ps1-psv:
+#   Adds passive site server via scheduled task.
+#
+# install_secondary_site on ps1-pss:
+#   Schedules New-CMSecondarySite on ps1-pss targeting ps1-sec.
+#
+# ps1-lib content library setup happens implicitly via prep +
+# create_contentlib_share in phase 30. install_primary_site's
+# move-content-library step targets ps1-lib.
+#
+# These are sequenced (site install first, then everything that needs
+# a working primary).
+
+- name: install_primary_site on ps1-pss (standalone install; CAS extends later)
+  hosts: ps1-pss
+  gather_facts: false
+  roles:
+    - role: mayyhem.ludus_sccm.install_primary_site
+
+- name: install_sms on ps1-sms
+  hosts: ps1-sms
+  gather_facts: false
+  roles:
+    - role: mayyhem.ludus_sccm.install_sms
+
+- name: install_passive_site_server on ps1-psv
+  hosts: ps1-psv
+  gather_facts: false
+  roles:
+    - role: mayyhem.ludus_sccm.install_passive_site_server
+
+- name: install_secondary_site (targets ps1-sec, driven from ps1-pss)
+  hosts: ps1-pss
+  gather_facts: false
+  roles:
+    - role: mayyhem.ludus_sccm.install_secondary_site

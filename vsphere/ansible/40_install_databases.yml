@@ -1,0 +1,21 @@
+---
+# Phase 40 — install SQL Server on both SQL boxes.
+#
+# Downloads SQLServer2022-x64-ENU.iso (~2 GB) to the controller cache,
+# copies to each SQL VM, installs SQL with MSSQLSERVER instance,
+# creates the sccmsqlsvc service account, adds the site server's
+# computer account + any additional sysadmins to SQL's sysadmin role.
+#
+# Prerequisites (phase 35): the site server computer account is in
+# local Administrators on each SQL host — the role uses that to grant
+# SQL sysadmin.
+#
+# Both SQL installs run in the same play so they clone in parallel.
+# Total time is dominated by the SQL install (~20 min per host, but
+# hosts install in parallel).
+
+- name: install_site_database on cas-db and ps1-db
+  hosts: cas-db:ps1-db
+  gather_facts: false
+  roles:
+    - role: mayyhem.ludus_sccm.install_site_database

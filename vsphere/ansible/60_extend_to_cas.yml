@@ -1,0 +1,19 @@
+---
+# Phase 60 — extend PS1 to add CAS on top.
+#
+# install_primary_site on cas-pss:
+#   Same role as PS1 install, but host_vars/cas-pss/main.yml sets
+#     ludus_sccm_win_sccm_config_default_template: ExtendPrimaryToCAS.ini.j2
+#     ludus_sccm_sitecode: CAS
+#     ludus_sccm_configure_client_push / _naa / etc.: false
+#   The ExtendPrimaryToCAS.ini.j2 answer file has Action=InstallCAS
+#   with [HierarchyExpansionOption] block that joins ps1-pss. Result:
+#   CAS is created, PS1 becomes a child primary of CAS.
+#
+# Prerequisites: ps1-pss install_primary_site complete (phase 50).
+
+- name: install_primary_site on cas-pss (Action=InstallCAS, extends ps1-pss)
+  hosts: cas-pss
+  gather_facts: false
+  roles:
+    - role: mayyhem.ludus_sccm.install_primary_site

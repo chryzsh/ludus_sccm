@@ -1,0 +1,63 @@
+---
+# Phase 30 — prep every SCCM site system with Windows features + files.
+#
+# Roles:
+#   prep_dp on ps1-dp                 — RDC, WDS, IIS bits; init WDS.
+#   prep_mp on ps1-mp                 — BITS/IIS/etc.
+#   prep_sms on ps1-sms               — GPMC, IIS, downloads ADK.
+#   prep_siteserver on ps1-pss        — big one: ADK + WinPE ADK +
+#                                        MCM_Configmgr_2403.exe extracted to
+#                                        C:\ludus\sccm\cd.retail.LN; templates
+#                                        ConfigMgrSetup.ini (per host_vars);
+#                                        set_effective_hostnames.yml;
+#                                        SystemManagement.ps1.
+#   prep_siteserver on cas-pss        — same, but with the
+#                                        ExtendPrimaryToCAS.ini.j2 template
+#                                        (see host_vars/cas-pss/main.yml).
+#   create_contentlib_share on ps1-lib — C:\Share\ContentLib share ACL'd
+#                                        to the sAMAccountName of ps1-pss
+#                                        (looked up via delegate_to: dc).
+#
+# All roles cache large downloads to the controller under
+# {{ ludus_install_directory }} (defaults to /tmp/ludus-sccm-cache from
+# group_vars/all/main.yml), then copy to the target VM. No parallel
+# duplicate downloads.
+#
+# Plays run in the order below. Serial by play; total time is roughly
+# the sum, dominated by prep_siteserver (SCCM extract).
+
+- name: prep_dp on ps1-dp
+  hosts: ps1-dp
+  gather_facts: false
+  roles:
+    - role: mayyhem.ludus_sccm.prep_dp
+
+- name: prep_mp on ps1-mp
+  hosts: ps1-mp
+  gather_facts: false
+  roles:
+    - role: mayyhem.ludus_sccm.prep_mp
+
+- name: prep_sms on ps1-sms
+  hosts: ps1-sms
+  gather_facts: false
+  roles:
+    - role: mayyhem.ludus_sccm.prep_sms
+
+- name: prep_siteserver on ps1-pss
+  hosts: ps1-pss
+  gather_facts: false
+  roles:
+    - role: mayyhem.ludus_sccm.prep_siteserver
+
+- name: prep_siteserver on cas-pss
+  hosts: cas-pss
+  gather_facts: false
+  roles:
+    - role: mayyhem.ludus_sccm.prep_siteserver
+
+- name: create_contentlib_share on ps1-lib
+  hosts: ps1-lib
+  gather_facts: false
+  roles:
+    - role: mayyhem.ludus_sccm.create_contentlib_share

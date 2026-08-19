@@ -51,6 +51,17 @@
       delegate_to: localhost
       when: not domain_state.result.in_domain
 
+    # Active Directory Web Services (port 9389) starts a bit after WinRM.
+    # microsoft.ad.user talks to it via the AD PowerShell module, so
+    # gate on it being up before creating users.
+    - name: Wait for ADWS (port 9389) to be listening
+      ansible.builtin.wait_for:
+        host: "{{ hostvars['dc'].ansible_host }}"
+        port: 9389
+        timeout: 300
+        state: started
+      delegate_to: localhost
+
     - name: Create domain admin user
       microsoft.ad.user:
         name: "{{ defaults.ad_domain_admin }}"
@@ -63,3 +74,7 @@
             - Enterprise Admins
             - Schema Admins
         path: "CN=Users,DC={{ ludus_domain_fqdn.split('.') | join(',DC=') }}"
+      register: dom_user
+      until: dom_user is succeeded
+      retries: 10
+      delay: 30

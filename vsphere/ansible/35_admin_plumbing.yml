@@ -1,0 +1,32 @@
+---
+# Phase 35 — add site server + additional accounts to local Administrators
+# on every site system.
+#
+# add_pss_to_admins:
+#   Adds the site server's computer account (ps1-pss$ or cas-pss$) to
+#   local Administrators on each site system. Uses
+#   ludus_sccm_site_server_hostname host_var to know which PSS.
+#   Requires the DC to be reachable (uses microsoft.ad.object_info
+#   with delegate_to: {{ ludus_dc_vm_name }}). Prerequisite for the site
+#   server to be able to push content and configure SQL.
+#
+# add_accounts_to_admins:
+#   Adds the comma-listed accounts from ludus_sccm_add_accounts_to_admins
+#   to local Administrators on each host. Different accounts per host —
+#   see host_vars. Typical additions: ps1-psv$ (passive site server) on
+#   ps1 site systems; cas-pss$ + ps1-psv$ on ps1-pss.
+
+- name: add_pss_to_admins on all site systems
+  hosts: cas_tier:!dc:!cas-pss:ps1_tier:!ps1-pss
+  gather_facts: false
+  roles:
+    - role: mayyhem.ludus_sccm.add_pss_to_admins
+
+- name: add_accounts_to_admins where ludus_sccm_add_accounts_to_admins is set
+  hosts: cas_tier:ps1_tier
+  gather_facts: false
+  tasks:
+    - name: Run add_accounts_to_admins
+      ansible.builtin.include_role:
+        name: mayyhem.ludus_sccm.add_accounts_to_admins
+      when: ludus_sccm_add_accounts_to_admins is defined and ludus_sccm_add_accounts_to_admins | length > 0

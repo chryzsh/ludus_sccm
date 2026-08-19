@@ -5,36 +5,23 @@
 # in isolation. Skip a phase by commenting its import_playbook line.
 # Run a single phase directly: ./run.sh NN_phase.yml
 #
-# ps1-dev is excluded via --limit '!ps1-dev' until its Windows 11
-# template's guest customization works (firmware=EFI fix retry pending).
-#
 # The Mayyhem collection assumes Ludus platform pre-work: the DC is
-# already promoted and the domainadmin user already exists. Phases 05
-# and 15 fill those in for our provider-agnostic bring-up.
+# already promoted, `domainadmin` already exists, non-DC VMs already
+# joined to the domain. Phases 05 and 15 replicate that pre-work here.
 
-- import_playbook: 00_connectivity.yml   # win_ping every host
-- import_playbook: 05_ad_forest.yml      # promote DC + create domainadmin
-- import_playbook: 10_windows_base.yml   # windows_base on every host
-- import_playbook: 15_domain_join.yml    # join non-DC hosts to the domain
-- import_playbook: 20_install_adcs.yml   # install ADCS on the DC
+- import_playbook: 00_connectivity.yml       # win_ping every host
+- import_playbook: 05_ad_forest.yml          # promote DC + create domainadmin
+- import_playbook: 10_windows_base.yml       # windows_base on every host
+- import_playbook: 15_domain_join.yml        # join non-DC hosts to the domain
+- import_playbook: 20_install_adcs.yml       # install ADCS on the DC
+- import_playbook: 30_prep_site_systems.yml  # prep_dp, prep_mp, prep_sms,
+                                             # prep_siteserver ×2, contentlib
+- import_playbook: 35_admin_plumbing.yml     # add_pss_to_admins + accounts
+- import_playbook: 40_install_databases.yml  # SQL on cas-db + ps1-db
+- import_playbook: 50_install_ps1.yml        # install PS1 (standalone install)
+                                             # + SMS, passive, secondary
+- import_playbook: 60_extend_to_cas.yml      # cas-pss extends ps1-pss to add CAS
 
-# TODO: remaining phases — each becomes its own NN_phase.yml.
-#
-# 30_prep_site_systems.yml — prep_dp on ps1-dp, prep_mp on ps1-mp,
-#                             prep_sms on ps1-sms, prep_siteserver on
-#                             ps1-pss (and later cas-pss);
-#                             create_contentlib_share on ps1-lib;
-#                             set_effective_hostnames per site server.
-# 40_install_databases.yml — install_site_database on ps1-db and cas-db
-#                             (add_pss_to_admins is a prerequisite for
-#                             each).
-# 50_install_ps1.yml       — install_primary_site on ps1-pss (Standalone,
-#                             site code PS1); install_sms on ps1-sms;
-#                             install_passive_site_server;
-#                             install_secondary_site.
-# 60_extend_to_cas.yml     — install_primary_site on cas-pss with
-#                             ExtendPrimaryToCAS.ini.j2 (Action=InstallCAS,
-#                             site code CAS, joins the ps1-pss primary).
-# 70_verify.yml            — health checks: SQL listener, CM DBs, CAS/PS1
-#                             hierarchy state, boundary group membership,
-#                             discovery methods.
+# TODO once we have a green run:
+# 70_verify.yml — SQL listener, CM DBs, hierarchy state, boundary group
+#                 membership, discovery methods reporting.
