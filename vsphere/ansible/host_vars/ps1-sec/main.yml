@@ -1,0 +1,4 @@
+---
+ludus_sccm_site_server_hostname: 'ps1-pss'
+ludus_sccm_is_primary_or_cas: false
+ludus_sccm_add_accounts_to_admins: "ps1-psv$"

@@ -1,0 +1,26 @@
+---
+# ps1-pss is the PS1 primary. Uses ChildSiteConfigMgrSetup.ini.j2 with
+# ParentSiteCode=CAS / ParentSiteServer=cas-pss, but at install time CAS
+# does not yet exist — setup silently falls back to a standalone
+# primary install. cas-pss later extends this primary to add CAS on top
+# (via ExtendPrimaryToCAS.ini.j2), which retroactively makes PS1 a
+# child of CAS.
+
+ludus_sccm_parent_sitecode: 'CAS'
+ludus_sccm_parent_site_server_hostname: 'cas-pss'
+ludus_sccm_add_accounts_to_admins: 'cas-pss$,ps1-psv$'
+ludus_sccm_win_sccm_config_default_template: ChildSiteConfigMgrSetup.ini.j2
+
+ludus_sccm_sitecode: PS1
+ludus_sccm_sitename: Primary Site One
+ludus_sccm_site_server_hostname: 'ps1-pss'
+ludus_sccm_passive_hostname: 'ps1-psv'
+ludus_sccm_distro_server_hostname: 'ps1-dp'
+ludus_sccm_mgmt_server_hostname: 'ps1-mp'
+ludus_sccm_sql_server_hostname: 'ps1-db'
+ludus_sccm_sms_provider_hostname: 'ps1-sms'
+ludus_sccm_contentlib_hostname: 'ps1-lib'
+
+ludus_sccm_secondary_sitecode: 'SEC'
+ludus_sccm_secondary_siteserver_fqdn: 'ps1-sec.mayyhem.com'
+ludus_sccm_install_stall_timeout_minutes: 30

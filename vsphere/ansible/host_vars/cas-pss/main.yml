@@ -1,0 +1,30 @@
+---
+# cas-pss runs install_primary_site with Action=InstallCAS via
+# ExtendPrimaryToCAS.ini.j2 — extends ps1-pss (which was installed as a
+# standalone primary; ChildSiteConfigMgrSetup silently degrades to
+# standalone when CAS is absent at install time). The extension makes
+# ps1 a child of the new CAS.
+
+ludus_sccm_sitecode: CAS
+ludus_sccm_sitename: Central Administration Site
+ludus_sccm_child_site_server_hostname: 'ps1-pss'
+ludus_sccm_win_sccm_config_default_template: ExtendPrimaryToCAS.ini.j2
+ludus_sccm_site_server_hostname: 'cas-pss'
+ludus_sccm_sql_server_hostname: 'cas-db'
+ludus_sccm_scp_hostname: 'cas-scp'
+
+# CAS-only overrides: no client push, no PXE, no NAA, no boundary
+# creation. These are all primary-site concerns; a hierarchy top does
+# not run them.
+ludus_sccm_configure_client_push: false
+ludus_sccm_enable_pxe: false
+ludus_sccm_configure_naa: false
+ludus_sccm_configure_task_sequence: false
+ludus_sccm_configure_domain_join: false
+ludus_sccm_enable_active_directory_forest_discovery: false
+ludus_sccm_enable_active_directory_boundary_creation: false
+ludus_sccm_enable_subnet_boundary_creation: false
+ludus_sccm_enable_active_directory_group_discovery: false
+ludus_sccm_enable_active_directory_system_discovery: false
+ludus_sccm_enable_active_directory_user_discovery: false
+ludus_sccm_install_stall_timeout_minutes: 30
