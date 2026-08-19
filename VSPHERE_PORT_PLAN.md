@@ -141,13 +141,9 @@ Based on documentation review; the autosave is authoritative:
 
 ## Known state / deferred items
 
-- **`ps1-dev` (Win11 client) — terraform-provisioned but customization failed.** VMware Tools in the operator's `windows-11-template` isn't responding, so vSphere never confirmed guest customization completion; the VM is powered on but has no network config or reachable IP. Terraform state records the resource. It is not needed for the CAS or PS1 install (workstation is a domain member, not part of the SCCM install DAG). After the operator fixes the Win11 template, taint + reapply just that one resource:
-  ```
-  terraform taint 'vsphere_virtual_machine.mayyhem_vm["ps1-dev"]'
-  terraform plan  -var-file=~/.mayyhem-sccm/vsphere.tfvars -out=plan.tfplan
-  terraform apply plan.tfplan
-  ```
-  Verify the plan shows exactly one destroy + one create for `ps1-dev` and nothing else.
+- **ps1-dev Win11 template quirks (resolved but noted for future clones).**
+  - Firmware default in the vSphere provider is BIOS; the Win11 template is EFI/GPT. Provider does not inherit `firmware` from the source template, so a BIOS clone lands on PXE boot. `vms.tf` now sets `firmware = "efi"` conditionally on `template_key == "workstation"`.
+  - Win11 template's built-in Administrator is disabled; a separate `Admin` local user (packer-created) is what accepts WinRM. vSphere's `customize.admin_password` targets Administrator (which stays disabled) and does not create/enable Admin. Handled via a gitignored `host_vars/ps1-dev/local.yml` override (`ansible_user: Admin`, `ansible_password: Welcome1`) for pre-domain-join phases. After phase 15 (domain join) the domain admin credential takes over.
 
 ## 4. Sequenced work plan
 
