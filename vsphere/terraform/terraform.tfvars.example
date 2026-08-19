@@ -1,0 +1,49 @@
+# Example tfvars — placeholders only. Copy this to a real tfvars file at
+# ~/.mayyhem-sccm/vsphere.tfvars (or anywhere OUTSIDE this repo) and fill
+# in your environment. Never commit a real tfvars — see AGENTS.md.
+#
+# terraform apply -var-file=~/.mayyhem-sccm/vsphere.tfvars
+
+### vCenter connection ###
+vsphere_server   = "vcenter.example"
+vsphere_user     = "administrator@vsphere.local"
+vsphere_password = "change_me"
+vsphere_insecure = true
+
+### vSphere objects ###
+vsphere_datacenter    = "Datacenter"
+vsphere_resource_pool = "Resources"
+vsphere_datastore     = "datastore1"
+vsphere_network       = "VM Network"
+vsphere_folder        = "Personal/username/sccm-lab-mayyhem"
+
+### Templates ###
+vsphere_server_template      = "windows-server-2022-template"
+vsphere_workstation_template = "windows-11-template"
+
+### Guest customization / network ###
+ipv4_netmask = 24
+ipv4_gateway = "192.0.2.1"
+dns_server   = "192.0.2.10"
+domain_fqdn  = "mayyhem.com"
+
+### Lab identity ###
+lab_prefix           = "mayyhem-sccm"
+local_admin_password = "change_me_too"
+
+### Per-VM IPs — every key required ###
+vm_ips = {
+  "dc"       = "192.0.2.10"
+  "cas-db"   = "192.0.2.11"
+  "cas-scp"  = "192.0.2.12"
+  "cas-pss"  = "192.0.2.13"
+  "ps1-db"   = "192.0.2.14"
+  "ps1-lib"  = "192.0.2.15"
+  "ps1-psv"  = "192.0.2.16"
+  "ps1-dp"   = "192.0.2.17"
+  "ps1-mp"   = "192.0.2.18"
+  "ps1-sms"  = "192.0.2.19"
+  "ps1-pss"  = "192.0.2.20"
+  "ps1-dev"  = "192.0.2.21"
+  "ps1-sec"  = "192.0.2.22"
+}
