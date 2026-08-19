@@ -15,6 +15,9 @@
 
 - name: windows_base on all VMs
   hosts: all
-  gather_facts: false
+  # gather_facts on: windows_base's completion-marker task uses
+  # {{ ansible_date_time.iso8601 }}, which is only set when facts are
+  # gathered.
+  gather_facts: true
   roles:
     - role: mayyhem.ludus_sccm.windows_base
