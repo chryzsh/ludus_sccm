@@ -63,7 +63,7 @@ All 13 VMs share one flat port group on a `/22`. Ludus's two-VLAN split (CAS tie
 
 ### 1.4 Windows templates
 
-Two vSphere templates are required in the target vCenter: one Windows Server (Server 2022 per upstream; Server 2025 also works) and one Windows 11. Exact template names live in the operator's tfvars, not in this file. Templates must have VMware Tools installed, WinRM enabled (HTTP/5985, NTLM), a known local Administrator password, and a guest customization spec ready. No Packer work needed if the templates already exist.
+Two vSphere templates are required in the target vCenter: a Windows Server template and a Windows 11 template. Server version should match Mayyhem upstream (Server 2022) — the collection installs SCCM 2303, which pre-dates Server 2025 and does not list it as a supported site-system OS. Bumping to a later Server release would also mean bumping SCCM baseline, which is a larger deviation than this port intends. Exact template names live in the operator's tfvars, not in this file. Templates must have VMware Tools installed, WinRM enabled (HTTP/5985, NTLM), a known local Administrator password, and a guest customization spec ready. No Packer work needed if the templates already exist.
 
 ## 2. Fixes to make in the collection regardless of provider
 
