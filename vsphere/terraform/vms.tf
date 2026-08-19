@@ -23,6 +23,16 @@ resource "vsphere_virtual_machine" "mayyhem_vm" {
   guest_id  = each.value.template_key == "workstation" ? data.vsphere_virtual_machine.workstation_template.guest_id : data.vsphere_virtual_machine.server_template.guest_id
   scsi_type = each.value.template_key == "workstation" ? data.vsphere_virtual_machine.workstation_template.scsi_type : data.vsphere_virtual_machine.server_template.scsi_type
 
+  # firmware and efi_secure_boot_enabled are NOT inherited from the source
+  # template by data.vsphere_virtual_machine — they default to bios/false
+  # unless declared explicitly here. A BIOS-firmware clone of an EFI/GPT
+  # template will fail to find a bootloader and drop to PXE. Set per
+  # template family based on how each template was built:
+  #   - Windows Server 2022 template: BIOS, secure boot off.
+  #   - Windows 11 template: EFI, secure boot off (matches template state).
+  firmware                = each.value.template_key == "workstation" ? "efi" : "bios"
+  efi_secure_boot_enabled = false
+
   network_interface {
     network_id   = data.vsphere_network.network.id
     adapter_type = each.value.template_key == "workstation" ? data.vsphere_virtual_machine.workstation_template.network_interface_types[0] : data.vsphere_virtual_machine.server_template.network_interface_types[0]
