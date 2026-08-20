@@ -20,5 +20,6 @@
 - import_playbook: 40_install_databases.yml  # SQL on cas-db + ps1-db
 - import_playbook: 50_install_ps1.yml        # install PS1 (standalone install)
                                              # + SMS, passive, secondary
+- import_playbook: 55_prep_cas_extension.yml # copy PS1's CD.Latest onto cas-pss
 - import_playbook: 60_extend_to_cas.yml      # cas-pss extends ps1-pss to add CAS
 - import_playbook: 70_verify.yml             # SQL + CM DB + hierarchy + boundary group

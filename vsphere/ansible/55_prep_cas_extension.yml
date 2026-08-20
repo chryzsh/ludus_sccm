@@ -1,0 +1,51 @@
+---
+# Phase 55 — prepare cas-pss for CAS extension.
+#
+# SCCM setup refuses to add a CAS to an existing hierarchy unless it is
+# run from the primary site server's CD.Latest folder (with CDLatest=1
+# in the answer file). cas-pss's C:\ludus\sccm\cd.retail.LN currently
+# holds the baseline install media (extracted from MCM_Configmgr_2403.exe
+# in prep_siteserver). That won't work for the CAS extension.
+#
+# Replace cd.retail.LN's contents on cas-pss with the CD.Latest content
+# from ps1-pss. cas-pss$ is already a local admin on ps1-pss (added in
+# phase 35 via add_accounts_to_admins), so the machine account can read
+# ps1-pss's C$ share; we run as domainadmin here for symmetry with the
+# rest of the collection.
+
+- name: Prepare cas-pss with CD.Latest from ps1-pss
+  hosts: cas-pss
+  gather_facts: false
+  tasks:
+    - name: Copy PS1's CD.Latest onto cas-pss's cd.retail.LN
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        $src = '\\ps1-pss.mayyhem.com\C$\Program Files\Microsoft Configuration Manager\CD.Latest'
+        $dst = 'C:\ludus\sccm\cd.retail.LN'
+        $backup = 'C:\ludus\sccm\cd.retail.LN.baseline'
+
+        if (-not (Test-Path $src)) { throw "CD.Latest not found at $src" }
+
+        # One-time backup of the baseline media; subsequent runs skip this.
+        if (-not (Test-Path $backup) -and (Test-Path $dst)) {
+          Rename-Item -Path $dst -NewName (Split-Path $backup -Leaf)
+        } elseif (Test-Path $dst) {
+          Remove-Item -Path $dst -Recurse -Force
+        }
+        New-Item -Path $dst -ItemType Directory -Force | Out-Null
+
+        # robocopy exits 0-7 = success, 8+ = failure. Force exit 0 on 0-7.
+        robocopy $src $dst /E /R:2 /W:5 /NP /NFL /NDL /NJH /NJS
+        if ($LASTEXITCODE -ge 8) { throw "robocopy failed with code $LASTEXITCODE" }
+
+        # Sanity: setup.exe must be present under SMSSETUP\bin\X64.
+        $setup = Join-Path $dst 'SMSSETUP\bin\X64\setupwpf.exe'
+        if (-not (Test-Path $setup)) { throw "setupwpf.exe missing at $setup after copy" }
+        Write-Output "OK: $dst populated from $src; setup at $setup"
+      vars:
+        ansible_become: true
+        ansible_become_method: runas
+        ansible_become_user: '{{ ludus_domain_netbios_name }}\{{ defaults.ad_domain_admin }}'
+        ansible_become_password: '{{ defaults.ad_domain_admin_password }}'
+        ansible_become_flags: "logon_type=interactive logon_flags=with_profile"
+      changed_when: true
