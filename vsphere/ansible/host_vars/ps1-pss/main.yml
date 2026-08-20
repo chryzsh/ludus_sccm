@@ -25,9 +25,11 @@ ludus_sccm_secondary_sitecode: 'SEC'
 ludus_sccm_secondary_siteserver_fqdn: 'ps1-sec.mayyhem.com'
 ludus_sccm_install_stall_timeout_minutes: 30
 
-# PXE config in install_primary_site tries to copy a Win11 ISO from
-# {{ ludus_iso_path }} — a Proxmox-specific /var/lib/vz/template/iso
-# path that doesn't exist on the vSphere-port controller. Disable PXE
-# for the initial bring-up; can be re-enabled later after staging an
-# ISO locally. See VSPHERE_PORT_PLAN.md §1.3.
-ludus_sccm_enable_pxe: false
+# PXE re-enabled with a Win11 ISO staged on the ansible controller.
+# ludus_iso_path defaults to a Proxmox-specific path
+# (/var/lib/vz/template/iso); override to a local cache directory.
+# ludus_sccm_pxe_iso_filename defaults to Mayyhem's specific 22H2
+# Enterprise Eval build; override to the ISO actually present.
+ludus_sccm_enable_pxe: true
+ludus_iso_path: "/tmp/ludus-sccm-cache/isos"
+ludus_sccm_pxe_iso_filename: "w11_no_tpm_rufus.iso"
