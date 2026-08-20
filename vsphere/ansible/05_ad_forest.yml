@@ -79,3 +79,34 @@
       until: dom_user is succeeded
       retries: 10
       delay: 30
+
+    # Ludus creates these OUs and the domainjoin user as part of its
+    # platform layer. The collection assumes both exist:
+    #   - force_gpupdate.ps1 searches OU=Servers and OU=Workstations
+    #     under the domain DN (fixed to skip missing OUs, but the OUs
+    #     need to exist for the SCCM push GPO to apply to real hosts).
+    #   - add_os_task_sequence sets DomainOrganizationUnit to
+    #     "LDAP://OU=Workstations,..." and requires the domainjoin
+    #     credential in ludus_domain_join_account /
+    #     ludus_domain_join_password.
+    - name: Ensure OU=Workstations
+      microsoft.ad.ou:
+        name: Workstations
+        path: "DC={{ ludus_domain_fqdn.split('.') | join(',DC=') }}"
+        state: present
+
+    - name: Ensure OU=Servers
+      microsoft.ad.ou:
+        name: Servers
+        path: "DC={{ ludus_domain_fqdn.split('.') | join(',DC=') }}"
+        state: present
+
+    - name: Create domain-join user (referenced by add_os_task_sequence)
+      microsoft.ad.user:
+        name: "{{ ludus_domain_join_account | default('domainjoin') }}"
+        password: "{{ ludus_domain_join_password | default('Password123') }}"
+        password_never_expires: true
+        state: present
+        groups:
+          add:
+            - Domain Users
