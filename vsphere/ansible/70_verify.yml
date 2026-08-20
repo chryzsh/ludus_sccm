@@ -31,6 +31,12 @@
           $expected = if ('{{ inventory_hostname }}' -eq 'cas-db') { 'CM_CAS' } else { 'CM_PS1' }
           $out = & sqlcmd -E -h -1 -Q "SET NOCOUNT ON; SELECT name FROM sys.databases WHERE name = '$expected'" 2>$null
           $Ansible.Result = @{ expected = $expected; found = ($out -match $expected) }
+      vars:
+        ansible_become: true
+        ansible_become_method: runas
+        ansible_become_user: '{{ ludus_domain_netbios_name }}\{{ defaults.ad_domain_admin }}'
+        ansible_become_password: '{{ defaults.ad_domain_admin_password }}'
+        ansible_become_flags: "logon_type=interactive logon_flags=with_profile"
       register: cm_db
 
     - name: Assert CM database present
@@ -69,7 +75,12 @@
           $expected = "Discovery Default Boundary Group - PS1"
           $bg = Get-CMBoundaryGroup -Name $expected
           $Ansible.Result = @{ expected_name = $expected; found = ($bg -ne $null); default_site = if ($bg) { $bg.DefaultSiteCode } else { $null } }
-
+      vars:
+        ansible_become: true
+        ansible_become_method: runas
+        ansible_become_user: '{{ ludus_domain_netbios_name }}\{{ defaults.ad_domain_admin }}'
+        ansible_become_password: '{{ defaults.ad_domain_admin_password }}'
+        ansible_become_flags: "logon_type=interactive logon_flags=with_profile"
       register: bg
 
     - name: Assert per-site boundary group exists with DefaultSiteCode=PS1
