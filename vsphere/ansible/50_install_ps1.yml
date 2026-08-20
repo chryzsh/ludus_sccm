@@ -40,14 +40,24 @@
   roles:
     - role: mayyhem.ludus_sccm.install_primary_site
 
-- name: install_sms on ps1-sms
-  hosts: ps1-sms
+- name: install_sms — runs on ps1-pss (has setup.exe), targets ps1-sms
+  # install_sms invokes setup.exe /SDKINST from the site server itself,
+  # targeting the remote SMS provider host by FQDN. new-config.yml lists
+  # the role under ps1-pss's roles block (not ps1-sms). ps1-sms's own
+  # host_vars still supply ludus_sccm_sms_provider_hostname for the
+  # role's target argument.
+  hosts: ps1-pss
   gather_facts: false
+  vars:
+    ludus_sccm_sms_provider_hostname: 'ps1-sms'
   roles:
     - role: mayyhem.ludus_sccm.install_sms
 
-- name: install_passive_site_server on ps1-psv
-  hosts: ps1-psv
+- name: install_passive_site_server — runs on ps1-pss, targets ps1-psv
+  # Role uses ConfigurationManager.psd1 (only present on the site
+  # server) to move the content library and add the passive site server
+  # to the hierarchy. new-config.yml scopes it under ps1-pss's roles.
+  hosts: ps1-pss
   gather_facts: false
   roles:
     - role: mayyhem.ludus_sccm.install_passive_site_server
