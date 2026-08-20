@@ -11,6 +11,11 @@
 ludus_domain_fqdn: mayyhem.com
 ludus_domain_netbios_name: MAYYHEM
 
+# Ludus computes this internally; the Mayyhem collection uses it in
+# install_primary_site/client_push.yml to build LDAP DNs. For mayyhem.com
+# it evaluates to "com" — i.e. the FQDN with the first label stripped.
+ludus_domain_fqdn_tail: "{{ ludus_domain_fqdn.split('.', 1)[1] | default('') }}"
+
 # The DC's inventory hostname. Roles that need to hit AD delegate to
 # {{ ludus_dc_vm_name }} so this must match the inventory host key.
 ludus_dc_vm_name: dc

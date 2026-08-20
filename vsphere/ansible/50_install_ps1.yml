@@ -28,6 +28,15 @@
 - name: install_primary_site on ps1-pss (standalone install; CAS extends later)
   hosts: ps1-pss
   gather_facts: false
+  vars:
+    # The collection's install_primary_site defaults ship three weak
+    # passwords ("password") that don't meet default AD complexity.
+    # group_vars overrides were being shadowed by role-scope resolution
+    # during loop expansion; play-level vars are a higher precedence tier
+    # (priority 8 vs. group_vars priority 3) and take effect reliably.
+    ludus_sccm_client_push_password: "Password123"
+    ludus_sccm_task_sequence_password: "Password123"
+    ludus_sccm_domain_join_password: "Password123"
   roles:
     - role: mayyhem.ludus_sccm.install_primary_site
 
