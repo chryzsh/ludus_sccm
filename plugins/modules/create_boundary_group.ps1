@@ -43,6 +43,26 @@ if ($bg -and $bg.DefaultSiteCode -ne $module.Params.site_code) {
     $module.Result.changed = $true
 }
 
+# Set the "Use this boundary group for site assignment" flag
+# (SMS_BoundaryGroup.Flags bit 0). Set-CMBoundaryGroup -DefaultSiteCode
+# writes the assigned site code but does NOT flip this bit — that's a
+# separate console checkbox and a separate WMI property. Without the
+# bit set, DefaultSiteCode is stored but automatic site assignment is
+# inactive; client push tools deliver a DDR the MP accepts, but no
+# actual client push ever fires. This blocks ELEVATE-2 and any other
+# technique that requires automatic site assignment to be enabled.
+$sms_ns = "root\SMS\site_$($module.Params.site_code)"
+$bg_wmi = Get-WmiObject -Namespace $sms_ns -Class SMS_BoundaryGroup -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -eq $module.Params.boundary_group_name } |
+    Select-Object -First 1
+if ($bg_wmi -and ((([int]$bg_wmi.Flags) -band 1) -ne 1)) {
+    if (-not $module.CheckMode) {
+        $bg_wmi.Flags = (([int]$bg_wmi.Flags) -bor 1)
+        $bg_wmi.Put() | Out-Null
+    }
+    $module.Result.changed = $true
+}
+
 if (-not $module.CheckMode) {
     foreach ($server in $module.Params.site_system_server_names) {
         $get_server = Get-CMSiteSystemServer -Name $server -ErrorAction SilentlyContinue
