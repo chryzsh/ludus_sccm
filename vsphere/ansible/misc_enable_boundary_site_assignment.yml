@@ -1,0 +1,62 @@
+---
+# Set the "Use this boundary group for site assignment" flag on the PS1
+# boundary group so ELEVATE-2 (and any other technique that requires
+# automatic site assignment) is reachable in the lab.
+#
+# Background:
+#   The collection's create_boundary_group.ps1 sets DefaultSiteCode = PS1
+#   on the boundary group but leaves SMS_BoundaryGroup.Flags = 0. That
+#   leaves half the config a real DBA/console operator would set: the
+#   console's "Use this boundary group for site assignment" checkbox
+#   maps to Flags bit 0 (0x1). Without it, DefaultSiteCode is stored but
+#   inactive, which is exactly the state we hit when validating
+#   ELEVATE-2: sccmhunter --sccm-push-anonymous and SharpSCCM invoke
+#   client-push both deliver DDRs the MP accepts, but no client push
+#   ever fires because automatic site assignment is not enabled.
+#
+#   The fix here toggles bit 0 on. Idempotent: re-runs are no-ops.
+#
+#   The underlying bug in the collection is worth an upstream PR too
+#   (create_boundary_group.ps1 should set the flag when it sets
+#   DefaultSiteCode). This playbook is a lab-side workaround that can be
+#   applied right now without rerunning the whole SCCM install.
+
+- name: Enable "use for site assignment" on the PS1 boundary group
+  hosts: ps1-pss
+  gather_facts: false
+  vars:
+    bg_name: "Discovery Default Boundary Group - PS1"
+    sms_namespace: "root\\SMS\\site_PS1"
+  tasks:
+    - name: Read + set SMS_BoundaryGroup.Flags bit 0 via WMI
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $bg = Get-WmiObject -Namespace '{{ sms_namespace }}' -Class SMS_BoundaryGroup -Filter "Name='{{ bg_name }}'"
+          if (-not $bg) { throw "Boundary group '{{ bg_name }}' not found in {{ sms_namespace }}" }
+          $before = [int]$bg.Flags
+          if (($before -band 1) -ne 1) {
+            $bg.Flags = ($before -bor 1)
+            $bg.Put() | Out-Null
+            $Ansible.Changed = $true
+            $bg = Get-WmiObject -Namespace '{{ sms_namespace }}' -Class SMS_BoundaryGroup -Filter "Name='{{ bg_name }}'"
+          } else {
+            $Ansible.Changed = $false
+          }
+          $Ansible.Result = @{
+            name             = $bg.Name
+            flags_before     = $before
+            flags_after      = [int]$bg.Flags
+            default_sitecode = $bg.DefaultSiteCode
+          }
+      vars:
+        ansible_become: true
+        ansible_become_method: runas
+        ansible_become_user: 'MAYYHEM\domainadmin'
+        ansible_become_password: '{{ defaults.ad_domain_admin_password }}'
+        ansible_become_flags: "logon_type=interactive logon_flags=with_profile"
+      register: bg_flag
+
+    - name: Show boundary group state after change
+      ansible.builtin.debug:
+        var: bg_flag.result
