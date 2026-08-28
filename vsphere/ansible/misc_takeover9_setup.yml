@@ -9,25 +9,25 @@
 #   - ps1-db is up with SCCM's install_site_database complete.
 #
 # After this playbook:
-#   - AD user MAYYHEM\svc_monitor_sccm_link exists.
+#   - AD user MAYYHEM\svc_monitor_link exists.
 #   - It is a member of sysadmin on ps1-db.
 #   - A linked server named SCCMSITEDB exists on the monitor host,
 #     pointing at ps1-db.mayyhem.com with fixed credentials of
-#     svc_monitor_sccm_link.
+#     svc_monitor_link.
 #   - An attacker on the monitor host can run
 #       EXEC ('...') AT [SCCMSITEDB]
 #     to execute T-SQL on ps1-db as SA.
 #
 # Revert plan is in docs/takeover-9-lab-plan.md.
 
-- name: Ensure svc_monitor_sccm_link AD user exists
+- name: Ensure svc_monitor_link AD user exists
   hosts: dc
   gather_facts: false
   vars:
-    svc_user: svc_monitor_sccm_link
+    svc_user: svc_monitor_link
     svc_pass: Password123
   tasks:
-    - name: Create svc_monitor_sccm_link
+    - name: Create svc_monitor_link
       microsoft.ad.user:
         name: "{{ svc_user }}"
         password: "{{ svc_pass }}"
@@ -95,7 +95,7 @@
 
     - name: Run SQL 2022 unattended install (SQL feature only)
       ansible.windows.win_shell: |
-        {{ sql_iso_mount.mount_paths[0] }}setup.exe /Q /IAcceptSQLServerLicenseTerms /PID="EVAL" /ACTION=Install /FEATURES=SQL /INSTANCENAME=MSSQLSERVER /TCPENABLED=1 /SQLSVCACCOUNT="NT AUTHORITY\SYSTEM" /SQLSYSADMINACCOUNTS="MAYYHEM\domainadmin" /SQLMINMEMORY=512 /SQLMAXMEMORY=2048
+        {{ sql_iso_mount.mount_paths[0] }}setup.exe /Q /IAcceptSQLServerLicenseTerms /PID="22222-00000-00000-00000-00000" /ACTION=Install /FEATURES=SQL /INSTANCENAME=MSSQLSERVER /TCPENABLED=1 /SQLSVCACCOUNT="NT AUTHORITY\SYSTEM" /SQLSYSADMINACCOUNTS="MAYYHEM\domainadmin" /SQLMINMEMORY=512 /SQLMAXMEMORY=2048
       args:
         creates: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\Binn\sqlservr.exe'
       vars:
@@ -118,46 +118,83 @@
         state: started
         start_mode: auto
 
-- name: Install MSOLEDBSQL provider on monitor
+- name: Verify MSOLEDBSQL provider is present on monitor
+  # The SQL Server 2022 install already ships MSOLEDBSQL as a client-side
+  # component (installed under "Microsoft OLE DB Driver for SQL Server").
+  # No separate download/install needed. Just assert it's registered.
   hosts: monitor
   gather_facts: false
-  vars:
-    msoledb_url: https://download.microsoft.com/download/6/f/f/6ffefc73-39ab-4cc0-bb7c-4093d64c2669/en-US/19.4.1.0/x64/msoledbsql.msi
-    msoledb_local: 'C:\ludus\sql\msoledbsql.msi'
   tasks:
-    - name: Check for MSOLEDBSQL installer on monitor
-      ansible.windows.win_stat:
-        path: "{{ msoledb_local }}"
-      register: msoledb_stat
+    - name: Assert MSOLEDBSQL is registered
+      ansible.windows.win_shell: |
+        $p = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' 2>$null |
+             Where-Object { $_.DisplayName -like 'Microsoft OLE DB Driver for SQL Server*' } |
+             Select-Object -First 1
+        if (-not $p) { throw 'MSOLEDBSQL not found on this host' }
+        Write-Output ("{0} {1}" -f $p.DisplayName, $p.DisplayVersion)
+      changed_when: false
+      register: msoledb_check
+    - ansible.builtin.debug:
+        var: msoledb_check.stdout_lines
 
-    - name: Download MSOLEDBSQL to monitor
-      ansible.windows.win_get_url:
-        url: "{{ msoledb_url }}"
-        dest: "{{ msoledb_local }}"
-      when: not msoledb_stat.stat.exists
-
-    - name: Install MSOLEDBSQL (accepts EULA silently)
-      ansible.windows.win_package:
-        path: "{{ msoledb_local }}"
-        state: present
-        arguments: IACCEPTMSOLEDBSQLLICENSETERMS=YES /qn
-
-- name: Grant svc_monitor_sccm_link sysadmin on ps1-db
+- name: Enable Mixed Mode + create SQL login sccm_link on ps1-db
+  # TAKEOVER-9's payload is a stored SQL credential on the linked server;
+  # SQL Server rejects a stored username/password pair for a Windows
+  # login (those need Kerberos). So the site database has to accept SQL
+  # authentication for this attack to be reproducible in the classic
+  # form. Flip LoginMode = 2 (Mixed) via the registry, restart the SQL
+  # service, then create a SQL login with a password and grant sysadmin.
+  #
+  # This is realistic: it matches what a DBA would do to make a
+  # third-party product's fixed-credential connection work. It does not
+  # affect any existing Windows-auth login on ps1-db.
   hosts: ps1-db
   gather_facts: false
   vars:
-    svc_user: svc_monitor_sccm_link
+    sql_link_login: sccm_link
+    sql_link_password: Password123
   tasks:
-    - name: CREATE LOGIN and add to sysadmin role
+    - name: Read current LoginMode from registry
+      ansible.windows.win_reg_stat:
+        path: HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer
+        name: LoginMode
+      register: loginmode_before
+
+    - name: Set LoginMode = 2 (Mixed) — flag for service restart
+      ansible.windows.win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQLServer
+        name: LoginMode
+        data: 2
+        type: dword
+      register: loginmode_change
+
+    - name: Restart MSSQLSERVER only if LoginMode actually changed
+      ansible.windows.win_service:
+        name: MSSQLSERVER
+        state: restarted
+      when: (loginmode_before.value | default(-1)) != 2
+
+    - name: Wait for MSSQLSERVER to accept connections again
+      ansible.windows.win_wait_for:
+        host: 127.0.0.1
+        port: 1433
+        timeout: 60
+
+    - name: Create SQL login sccm_link with SA privilege
       ansible.windows.win_shell: |
         $ErrorActionPreference = 'Stop'
-        $login = "MAYYHEM\{{ svc_user }}"
+        $login = '{{ sql_link_login }}'
+        $pw    = '{{ sql_link_password }}'
         $sql = @"
-        IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = '$login')
+        IF NOT EXISTS (SELECT 1 FROM sys.sql_logins WHERE name = '$login')
           BEGIN
-            CREATE LOGIN [$login] FROM WINDOWS;
+            CREATE LOGIN [$login] WITH PASSWORD = '$pw', CHECK_POLICY = OFF;
           END
-        IF NOT IS_SRVROLEMEMBER('sysadmin', '$login') = 1
+        ELSE
+          BEGIN
+            ALTER LOGIN [$login] WITH PASSWORD = '$pw';
+          END
+        IF IS_SRVROLEMEMBER('sysadmin', '$login') = 0
           BEGIN
             EXEC sp_addsrvrolemember @loginame = '$login', @rolename = 'sysadmin';
           END
@@ -180,16 +217,22 @@
   hosts: monitor
   gather_facts: false
   vars:
-    svc_user: svc_monitor_sccm_link
-    svc_pass: Password123
+    sql_link_login: sccm_link
+    sql_link_password: Password123
   tasks:
     - name: sp_addlinkedserver + sp_addlinkedsrvlogin (idempotent)
+      vars:
+        ansible_become: true
+        ansible_become_method: runas
+        ansible_become_user: 'MAYYHEM\domainadmin'
+        ansible_become_password: '{{ defaults.ad_domain_admin_password }}'
+        ansible_become_flags: "logon_type=interactive logon_flags=with_profile"
       ansible.windows.win_shell: |
         $ErrorActionPreference = 'Stop'
         $link = 'SCCMSITEDB'
         $rmt  = 'ps1-db.mayyhem.com'
-        $rmt_user = 'MAYYHEM\{{ svc_user }}'
-        $rmt_pass = '{{ svc_pass }}'
+        $rmt_user = '{{ sql_link_login }}'
+        $rmt_pass = '{{ sql_link_password }}'
 
         $sql = @"
         IF NOT EXISTS (SELECT 1 FROM sys.servers WHERE name = '$link')
@@ -228,6 +271,12 @@
         var: link_result.stdout_lines
 
     - name: Verify pivot works — run remote query via linked server
+      vars:
+        ansible_become: true
+        ansible_become_method: runas
+        ansible_become_user: 'MAYYHEM\domainadmin'
+        ansible_become_password: '{{ defaults.ad_domain_admin_password }}'
+        ansible_become_flags: "logon_type=interactive logon_flags=with_profile"
       ansible.windows.win_shell: |
         sqlcmd -E -h -1 -W -Q "SELECT s.srv, s.sa FROM OPENQUERY([SCCMSITEDB], 'SELECT @@servername AS srv, IS_SRVROLEMEMBER(''sysadmin'') AS sa') AS s"
       register: pivot_result
