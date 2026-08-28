@@ -37,6 +37,9 @@ PS1_TIER = {
     "ps1-dev",
     "ps1-sec",
 }
+# Non-SCCM systems used to simulate a third-party integration for
+# TAKEOVER-9 lab reproduction. See docs/takeover-9-lab-plan.md.
+THIRD_PARTY_TIER = {"monitor"}
 
 
 def _extract_vms(state: dict) -> dict[str, dict]:
@@ -84,6 +87,7 @@ def _emit_inventory(vms: dict[str, dict], domain: str) -> str:
 
     cas_hosts = [h for h in CAS_TIER if h in vms]
     ps1_hosts = [h for h in PS1_TIER if h in vms]
+    tp_hosts = [h for h in THIRD_PARTY_TIER if h in vms]
 
     return (
         "# GENERATED FILE — do not commit. Regenerate with sync_inventory.py.\n"
@@ -96,7 +100,8 @@ def _emit_inventory(vms: dict[str, dict], domain: str) -> str:
         "    ansible_port: 5985\n"
         f"    ludus_domain_fqdn: {domain}\n"
         "  children:\n"
-        f"{_group('cas_tier', cas_hosts)}"
+        + (_group('third_party_tier', tp_hosts) if tp_hosts else '')
+        + f"{_group('cas_tier', cas_hosts)}"
         f"{_group('ps1_tier', ps1_hosts)}"
         "    domain_controllers:\n"
         "      hosts:\n"

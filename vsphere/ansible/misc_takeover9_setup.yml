@@ -1,0 +1,237 @@
+---
+# TAKEOVER-9 lab reproduction — set up a third-party SQL Server
+# (mayyhem-sccm-monitor) with a linked server pointing at ps1-db and a
+# fixed remote credential that has sysadmin on the site database.
+#
+# Prerequisites:
+#   - monitor VM exists and is reachable via WinRM (terraform apply +
+#     10_windows_base + 15_domain_join have run for host 'monitor').
+#   - ps1-db is up with SCCM's install_site_database complete.
+#
+# After this playbook:
+#   - AD user MAYYHEM\svc_monitor_sccm_link exists.
+#   - It is a member of sysadmin on ps1-db.
+#   - A linked server named SCCMSITEDB exists on the monitor host,
+#     pointing at ps1-db.mayyhem.com with fixed credentials of
+#     svc_monitor_sccm_link.
+#   - An attacker on the monitor host can run
+#       EXEC ('...') AT [SCCMSITEDB]
+#     to execute T-SQL on ps1-db as SA.
+#
+# Revert plan is in docs/takeover-9-lab-plan.md.
+
+- name: Ensure svc_monitor_sccm_link AD user exists
+  hosts: dc
+  gather_facts: false
+  vars:
+    svc_user: svc_monitor_sccm_link
+    svc_pass: Password123
+  tasks:
+    - name: Create svc_monitor_sccm_link
+      microsoft.ad.user:
+        name: "{{ svc_user }}"
+        password: "{{ svc_pass }}"
+        password_never_expires: true
+        state: present
+        groups:
+          add:
+            - Domain Users
+
+- name: Install SQL Server 2022 on monitor (SQL feature only)
+  hosts: monitor
+  gather_facts: false
+  vars:
+    sql_iso_url: https://download.microsoft.com/download/3/8/d/38de7036-2433-4207-8eae-06e247e17b25/SQLServer2022-x64-ENU.iso
+    sql_iso_name: SQLServer2022-x64-ENU.iso
+    sql_iso_cache_dir: "{{ ludus_install_directory }}/resources/sccm"
+    sql_host_path: 'C:\ludus\sql'
+  tasks:
+    - name: Ensure controller cache dir exists
+      ansible.builtin.file:
+        path: "{{ sql_iso_cache_dir }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      run_once: true
+
+    - name: Check for cached SQL ISO on controller
+      ansible.builtin.stat:
+        path: "{{ sql_iso_cache_dir }}/{{ sql_iso_name }}"
+      register: iso_local
+      delegate_to: localhost
+      run_once: true
+
+    - name: Download SQL 2022 ISO to controller cache
+      ansible.builtin.get_url:
+        url: "{{ sql_iso_url }}"
+        dest: "{{ sql_iso_cache_dir }}/{{ sql_iso_name }}"
+        mode: '0644'
+      delegate_to: localhost
+      run_once: true
+      when: not iso_local.stat.exists
+
+    - name: Create host-side SQL directory
+      ansible.windows.win_file:
+        path: "{{ sql_host_path }}"
+        state: directory
+
+    - name: Copy SQL ISO to monitor
+      ansible.windows.win_copy:
+        src: "{{ sql_iso_cache_dir }}/{{ sql_iso_name }}"
+        dest: "{{ sql_host_path }}\\{{ sql_iso_name }}"
+
+    - name: Check if SQL is already installed
+      ansible.windows.win_service_info:
+        name: MSSQLSERVER
+      register: mssql_status
+      failed_when: false
+
+    - name: Mount SQL ISO
+      community.windows.win_disk_image:
+        image_path: "{{ sql_host_path }}\\{{ sql_iso_name }}"
+        state: present
+      register: sql_iso_mount
+      when: mssql_status.services | default([]) | length == 0
+
+    - name: Run SQL 2022 unattended install (SQL feature only)
+      ansible.windows.win_shell: |
+        {{ sql_iso_mount.mount_paths[0] }}setup.exe /Q /IAcceptSQLServerLicenseTerms /PID="EVAL" /ACTION=Install /FEATURES=SQL /INSTANCENAME=MSSQLSERVER /TCPENABLED=1 /SQLSVCACCOUNT="NT AUTHORITY\SYSTEM" /SQLSYSADMINACCOUNTS="MAYYHEM\domainadmin" /SQLMINMEMORY=512 /SQLMAXMEMORY=2048
+      args:
+        creates: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\Binn\sqlservr.exe'
+      vars:
+        ansible_become: true
+        ansible_become_method: runas
+        ansible_become_user: 'MAYYHEM\domainadmin'
+        ansible_become_password: '{{ defaults.ad_domain_admin_password }}'
+        ansible_become_flags: "logon_type=interactive logon_flags=with_profile"
+      when: mssql_status.services | default([]) | length == 0
+
+    - name: Unmount SQL ISO
+      community.windows.win_disk_image:
+        image_path: "{{ sql_host_path }}\\{{ sql_iso_name }}"
+        state: absent
+      when: mssql_status.services | default([]) | length == 0
+
+    - name: Ensure MSSQLSERVER is running with auto start
+      ansible.windows.win_service:
+        name: MSSQLSERVER
+        state: started
+        start_mode: auto
+
+- name: Install MSOLEDBSQL provider on monitor
+  hosts: monitor
+  gather_facts: false
+  vars:
+    msoledb_url: https://download.microsoft.com/download/6/f/f/6ffefc73-39ab-4cc0-bb7c-4093d64c2669/en-US/19.4.1.0/x64/msoledbsql.msi
+    msoledb_local: 'C:\ludus\sql\msoledbsql.msi'
+  tasks:
+    - name: Check for MSOLEDBSQL installer on monitor
+      ansible.windows.win_stat:
+        path: "{{ msoledb_local }}"
+      register: msoledb_stat
+
+    - name: Download MSOLEDBSQL to monitor
+      ansible.windows.win_get_url:
+        url: "{{ msoledb_url }}"
+        dest: "{{ msoledb_local }}"
+      when: not msoledb_stat.stat.exists
+
+    - name: Install MSOLEDBSQL (accepts EULA silently)
+      ansible.windows.win_package:
+        path: "{{ msoledb_local }}"
+        state: present
+        arguments: IACCEPTMSOLEDBSQLLICENSETERMS=YES /qn
+
+- name: Grant svc_monitor_sccm_link sysadmin on ps1-db
+  hosts: ps1-db
+  gather_facts: false
+  vars:
+    svc_user: svc_monitor_sccm_link
+  tasks:
+    - name: CREATE LOGIN and add to sysadmin role
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        $login = "MAYYHEM\{{ svc_user }}"
+        $sql = @"
+        IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = '$login')
+          BEGIN
+            CREATE LOGIN [$login] FROM WINDOWS;
+          END
+        IF NOT IS_SRVROLEMEMBER('sysadmin', '$login') = 1
+          BEGIN
+            EXEC sp_addsrvrolemember @loginame = '$login', @rolename = 'sysadmin';
+          END
+        SELECT IS_SRVROLEMEMBER('sysadmin', '$login') AS is_sa;
+        "@
+        sqlcmd -E -h -1 -W -Q "$sql"
+      vars:
+        ansible_become: true
+        ansible_become_method: runas
+        ansible_become_user: 'MAYYHEM\domainadmin'
+        ansible_become_password: '{{ defaults.ad_domain_admin_password }}'
+        ansible_become_flags: "logon_type=interactive logon_flags=with_profile"
+      register: grant_result
+
+    - name: Show sysadmin membership check
+      ansible.builtin.debug:
+        var: grant_result.stdout_lines
+
+- name: Configure the SA-linked linked server on monitor
+  hosts: monitor
+  gather_facts: false
+  vars:
+    svc_user: svc_monitor_sccm_link
+    svc_pass: Password123
+  tasks:
+    - name: sp_addlinkedserver + sp_addlinkedsrvlogin (idempotent)
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        $link = 'SCCMSITEDB'
+        $rmt  = 'ps1-db.mayyhem.com'
+        $rmt_user = 'MAYYHEM\{{ svc_user }}'
+        $rmt_pass = '{{ svc_pass }}'
+
+        $sql = @"
+        IF NOT EXISTS (SELECT 1 FROM sys.servers WHERE name = '$link')
+          BEGIN
+            EXEC sp_addlinkedserver
+              @server = '$link',
+              @srvproduct = '',
+              @provider = 'MSOLEDBSQL',
+              @datasrc = '$rmt';
+          END
+
+        IF EXISTS (SELECT 1 FROM sys.linked_logins ll
+                   JOIN sys.servers s ON s.server_id = ll.server_id
+                   WHERE s.name = '$link' AND ll.local_principal_id = 0)
+          BEGIN
+            EXEC sp_droplinkedsrvlogin @rmtsrvname = '$link', @locallogin = NULL;
+          END
+
+        EXEC sp_addlinkedsrvlogin
+          @rmtsrvname = '$link',
+          @useself = 'FALSE',
+          @locallogin = NULL,
+          @rmtuser = '$rmt_user',
+          @rmtpassword = '$rmt_pass';
+
+        SELECT s.name, s.data_source, ll.remote_name, ll.uses_self_credential
+        FROM sys.servers s
+        LEFT JOIN sys.linked_logins ll ON ll.server_id = s.server_id
+        WHERE s.name = '$link';
+        "@
+        sqlcmd -E -h -1 -W -Q "$sql"
+      register: link_result
+
+    - name: Show linked server config
+      ansible.builtin.debug:
+        var: link_result.stdout_lines
+
+    - name: Verify pivot works — run remote query via linked server
+      ansible.windows.win_shell: |
+        sqlcmd -E -h -1 -W -Q "SELECT s.srv, s.sa FROM OPENQUERY([SCCMSITEDB], 'SELECT @@servername AS srv, IS_SRVROLEMEMBER(''sysadmin'') AS sa') AS s"
+      register: pivot_result
+
+    - name: Show pivot verification result
+      ansible.builtin.debug:
+        var: pivot_result.stdout_lines
