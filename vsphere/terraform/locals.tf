@@ -107,5 +107,17 @@ locals {
       disk_gb      = local.default_disk_gb
       template_key = "server"
     }
+    # ── Third-party integration (TAKEOVER-9 lab scenario) ───────────────
+    # Not part of Mayyhem's upstream new-config.yml. This VM plays the
+    # role of a third-party product's SQL backend that has a linked
+    # server pointing at ps1-db with SA credentials. See
+    # docs/takeover-9-lab-plan.md for the full design.
+    "monitor" = {
+      hostname     = "monitor"
+      cpus         = 2
+      memory_mb    = 4096
+      disk_gb      = local.default_disk_gb
+      template_key = "server"
+    }
   }
 }

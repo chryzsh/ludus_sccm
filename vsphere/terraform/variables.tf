@@ -124,7 +124,8 @@ variable "vm_ips" {
       contains(keys(var.vm_ips), "ps1-pss"),
       contains(keys(var.vm_ips), "ps1-dev"),
       contains(keys(var.vm_ips), "ps1-sec"),
+      contains(keys(var.vm_ips), "monitor"),
     ])
-    error_message = "vm_ips must contain entries for all 13 lab hosts. See locals.tf for the required keys."
+    error_message = "vm_ips must contain entries for all 14 lab hosts (13 SCCM + 1 monitor third-party). See locals.tf for the required keys."
   }
 }
