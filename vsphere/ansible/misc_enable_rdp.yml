@@ -1,0 +1,69 @@
+---
+# Enable RDP on every server VM in the lab.
+#
+# Toggles fDenyTSConnections off (the master switch), leaves NLA enabled
+# (the default UserAuthentication=1), and adds MAYYHEM\Domain Users to
+# the local Remote Desktop Users group so any domain account — not just
+# Domain Admins — can log in.
+#
+# Windows Firewall is already off on every host (windows_base handles
+# that in phase 10), so no firewall rule work is needed here.
+#
+# ps1-dev is excluded because RDP was enabled on it manually via the
+# console. If you re-run this playbook after re-provisioning ps1-dev,
+# drop the --limit or extend the include to cover it.
+#
+# Idempotent: re-running is a no-op once state matches.
+
+- name: Enable RDP on every server VM
+  hosts: all:!ps1-dev
+  gather_facts: false
+  tasks:
+    - name: Snapshot the RDP-Tcp listener state before changes
+      ansible.windows.win_shell: |
+        try {
+          $c = @(Get-NetTCPConnection -LocalPort 3389 -State Listen -ErrorAction SilentlyContinue).Count
+          Write-Output ($c -gt 0)
+        } catch { Write-Output "False" }
+      register: rdp_listener_before
+      changed_when: false
+
+    - name: Enable RDP via WMI (SetAllowTSConnections)
+      # Sets fDenyTSConnections=0 AND enables the Windows Firewall rule
+      # in one call. On Server 2022 the reg key alone doesn't bind the
+      # RDP-Tcp listener; the WMI method + a reboot does.
+      ansible.windows.win_shell: |
+        $r = (Get-WmiObject -Class Win32_TerminalServiceSetting -Namespace root\CIMV2\TerminalServices).SetAllowTSConnections(1, 1)
+        if ($r.ReturnValue -ne 0) { throw "SetAllowTSConnections returned $($r.ReturnValue)" }
+      changed_when: true
+
+    - name: NLA (UserAuthentication = 1)
+      ansible.windows.win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp
+        name: UserAuthentication
+        data: 1
+        type: dword
+
+    - name: Ensure TermService (Terminal Services) is running
+      ansible.windows.win_service:
+        name: TermService
+        state: started
+        start_mode: auto
+
+    - name: Add Domain Users to local Remote Desktop Users group
+      ansible.windows.win_group_membership:
+        name: Remote Desktop Users
+        members:
+          - MAYYHEM\Domain Users
+        state: present
+      vars:
+        ansible_become: true
+        ansible_become_method: runas
+        ansible_become_user: 'MAYYHEM\domainadmin'
+        ansible_become_password: '{{ defaults.ad_domain_admin_password }}'
+        ansible_become_flags: "logon_type=interactive logon_flags=with_profile"
+
+    - name: Reboot if the RDP-Tcp listener wasn't already bound
+      ansible.windows.win_reboot:
+        reboot_timeout: 600
+      when: rdp_listener_before.stdout | trim == 'False'
