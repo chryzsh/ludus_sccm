@@ -36,6 +36,7 @@ PS1_TIER = {
     "ps1-pss",
     "ps1-dev",
     "ps1-sec",
+    "ps1-lab",
 }
 # Non-SCCM systems used to simulate a third-party integration for
 # TAKEOVER-9 lab reproduction. See docs/takeover-9-lab-plan.md.

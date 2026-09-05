@@ -119,5 +119,18 @@ locals {
       disk_gb      = local.default_disk_gb
       template_key = "server"
     }
+    # ── Workshop multi-user RDP host ────────────────────────────────────
+    # Server 2022 host enrolled as a PS1 client (via the same client-push
+    # machinery ps1-dev uses), sized to support ~10 concurrent RDP
+    # sessions. RDS Session Host role installed by 37_workshop_rds.yml
+    # (uses the 120-day grace period, no CAL server needed). Student
+    # accounts are created by 36_demo_users.yml via a host_vars override.
+    "ps1-lab" = {
+      hostname     = "ps1-lab"
+      cpus         = 8
+      memory_mb    = 16384
+      disk_gb      = local.default_disk_gb
+      template_key = "server"
+    }
   }
 }

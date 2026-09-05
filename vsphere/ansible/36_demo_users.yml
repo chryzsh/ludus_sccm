@@ -1,0 +1,33 @@
+---
+# Phase 36 — Create low-privilege demo domain users on ps1-dev.
+#
+# Every lab VM autologs on as MAYYHEM\domainadmin (windows_base's
+# AutoAdminLogon), which leaves no non-privileged persona to demo from
+# (RDP, kerberoast target, "helpdesk-account with local admin" scenario,
+# etc.). This phase wires in the collection's create_demo_users role
+# (added on branch feat/demo-user, cherry-picked into feat/vsphere-port)
+# so the vSphere pipeline builds those accounts too.
+#
+# Scope: ps1-dev (Win11 client, gets the collection's default two-user
+# set: domainuser + helpdesk) AND ps1-lab (Server workshop host, gets 10
+# student accounts via a host_vars override). Site systems are excluded
+# because they run under dedicated service contexts.
+#
+# The role delegates the AD account creation to {{ ludus_dc_vm_name }},
+# so ps1-dev doesn't need RSAT ActiveDirectory installed; and the
+# local group membership tasks use runas to MAYYHEM\domainadmin, which
+# works because ps1-dev is domain-joined.
+#
+# Idempotent — the role guards every mutation; re-runs are no-ops.
+#
+# Placed after 35_admin_plumbing (SCCM local-admin plumbing) so the
+# demo-user local admin add can't race with SCCM's own group edits on
+# ps1-dev — though in practice the two roles touch disjoint hosts.
+
+- name: Create demo/student domain users + grant RDP access
+  # ps1-dev inherits the role's defaults (domainuser + helpdesk).
+  # ps1-lab has an override in host_vars for student01..student10.
+  hosts: ps1-dev:ps1-lab
+  gather_facts: false
+  roles:
+    - role: mayyhem.ludus_sccm.create_demo_users

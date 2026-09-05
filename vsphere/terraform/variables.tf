@@ -106,7 +106,7 @@ variable "local_admin_password" {
 ### Per-VM IP assignments ###
 
 variable "vm_ips" {
-  description = "Map of VM shortname -> IP address. Must have exactly the 13 hosts defined in locals.tf. Provided via tfvars."
+  description = "Map of VM shortname -> IP address. Must have entries for all hosts defined in locals.tf. Provided via tfvars."
   type        = map(string)
 
   validation {
@@ -125,7 +125,8 @@ variable "vm_ips" {
       contains(keys(var.vm_ips), "ps1-dev"),
       contains(keys(var.vm_ips), "ps1-sec"),
       contains(keys(var.vm_ips), "monitor"),
+      contains(keys(var.vm_ips), "ps1-lab"),
     ])
-    error_message = "vm_ips must contain entries for all 14 lab hosts (13 SCCM + 1 monitor third-party). See locals.tf for the required keys."
+    error_message = "vm_ips must contain entries for all 15 lab hosts (13 SCCM + 1 monitor third-party + 1 ps1-lab workshop). See locals.tf for the required keys."
   }
 }

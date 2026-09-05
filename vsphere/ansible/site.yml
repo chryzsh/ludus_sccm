@@ -17,6 +17,8 @@
 - import_playbook: 30_prep_site_systems.yml  # prep_dp, prep_mp, prep_sms,
                                              # prep_siteserver ×2, contentlib
 - import_playbook: 35_admin_plumbing.yml     # add_pss_to_admins + accounts
+- import_playbook: 36_demo_users.yml         # low-priv demo users on ps1-dev + student01-10 on ps1-lab
+- import_playbook: 37_workshop_rds.yml       # RDS Session Host + CRED-1/NAA-cache verify on ps1-lab
 - import_playbook: 40_install_databases.yml  # SQL on cas-db + ps1-db
 - import_playbook: 50_install_ps1.yml        # install PS1 (standalone install)
                                              # + SMS, passive, secondary

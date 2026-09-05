@@ -1,0 +1,24 @@
+---
+# ps1-lab is a workshop RDP host: Server 2022, joined to mayyhem.com,
+# enrolled as a PS1 client via the same client-push machinery that
+# handles ps1-dev. Sized in terraform for ~10 concurrent RDP sessions
+# (see locals.tf).
+
+# Site membership — same as every other PS1-tier host, so client push
+# picks it up.
+ludus_sccm_site_server_hostname: 'ps1-pss'
+
+# Override create_demo_users' 2-user default: 10 student accounts, all
+# local admin (workshop simplicity — no helpdesk vs. domainuser split),
+# all in Remote Desktop Users so they can RDP.
+ludus_sccm_demo_users:
+  - { username: student01, password: 'Password123', local_admin: true }
+  - { username: student02, password: 'Password123', local_admin: true }
+  - { username: student03, password: 'Password123', local_admin: true }
+  - { username: student04, password: 'Password123', local_admin: true }
+  - { username: student05, password: 'Password123', local_admin: true }
+  - { username: student06, password: 'Password123', local_admin: true }
+  - { username: student07, password: 'Password123', local_admin: true }
+  - { username: student08, password: 'Password123', local_admin: true }
+  - { username: student09, password: 'Password123', local_admin: true }
+  - { username: student10, password: 'Password123', local_admin: true }

@@ -1,0 +1,144 @@
+---
+# Phase 37 — Workshop-only: enable multi-user RDP + verify CM enrollment
+# and CRED-1 primitive on ps1-lab.
+#
+# Server 2022's built-in cap is 2 concurrent RDP sessions for admins.
+# For a workshop with ~10 students that isn't enough. Installing the
+# RDS Session Host role lifts that cap — the host will run for 120 days
+# without a license server (grace period), which is fine for a
+# time-boxed workshop. No CAL server to stand up.
+#
+# The last two tasks are diagnostic, not mutation:
+#   - Wait for ccmexec to be running (client push should have delivered
+#     the CM client shortly after domain join; we tolerate it taking a
+#     few minutes to materialise).
+#   - Read CCM_NetworkAccessAccount out of the client's local policy
+#     WMI namespace. Its presence confirms the CRED-1 primitive is
+#     usable from ps1-lab, matching ps1-dev's attack surface. If it's
+#     missing, the workshop's CRED-1 exercise won't work on this host
+#     — surface that early so the operator has time to fix it.
+#
+# Idempotent — RDS role install and reboot are guarded; diagnostic
+# tasks are always changed_when=false.
+
+- name: Enable multi-user RDP on ps1-lab (RDS Session Host)
+  hosts: ps1-lab
+  gather_facts: false
+  tasks:
+    - name: Install Remote Desktop Session Host role
+      ansible.windows.win_feature:
+        name: RDS-RD-Server
+        state: present
+        include_management_tools: true
+      register: rds_install
+
+    - name: Reboot if RDS install requires it
+      ansible.windows.win_reboot:
+        reboot_timeout: 600
+      when: rds_install.reboot_required | default(false)
+
+    - name: Verify RDS-RD-Server feature is installed post-reboot
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $f = Get-WindowsFeature -Name RDS-RD-Server
+          $Ansible.Result = @{
+            name         = $f.Name
+            installed    = [bool]$f.Installed
+            install_state = $f.InstallState.ToString()
+          }
+          if (-not $f.Installed) { throw "RDS-RD-Server did not install successfully." }
+      changed_when: false
+      register: rds_verify
+
+    - name: Show RDS feature state
+      ansible.builtin.debug:
+        var: rds_verify.result
+
+
+- name: Install + verify CM client + NAA cache on ps1-lab
+  hosts: ps1-lab
+  gather_facts: false
+  tasks:
+    # AD System Discovery from ps1-pss picks up new domain-joined hosts
+    # on its own cycle (which can be slow / stale) and only then does
+    # client push fire. For workshop determinism we bootstrap the client
+    # directly instead of waiting on discovery + push.
+    - name: Check if CM client is already installed
+      ansible.windows.win_powershell:
+        script: |
+          $svc = Get-Service -Name CcmExec -ErrorAction SilentlyContinue
+          $Ansible.Result = @{ installed = [bool]$svc }
+      register: ccm_present
+      changed_when: false
+
+    - name: Bootstrap CM client via ccmsetup from ps1-pss
+      # Runs as domainadmin because the ccmsetup binary lives on the
+      # SMS_PS1 share on ps1-pss, which is a domain-authenticated read.
+      ansible.windows.win_shell: |
+        $p = Start-Process -FilePath '\\ps1-pss\SMS_PS1\Client\ccmsetup.exe' `
+          -ArgumentList '/mp:ps1-mp','SMSSITECODE=PS1' `
+          -Wait -PassThru -NoNewWindow
+        if ($p.ExitCode -ne 0) { throw "ccmsetup exited $($p.ExitCode)" }
+        Write-Output ("ccmsetup exit code: " + $p.ExitCode)
+      vars:
+        ansible_become: true
+        ansible_become_method: runas
+        ansible_become_user: 'MAYYHEM\domainadmin'
+        ansible_become_password: '{{ defaults.ad_domain_admin_password }}'
+        ansible_become_flags: "logon_type=interactive logon_flags=with_profile"
+      when: not ccm_present.result.installed
+
+    - name: Wait for SMS Agent Host (ccmexec) service to be Running
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $svc = Get-Service -Name CcmExec -ErrorAction SilentlyContinue
+          if (-not $svc) { throw "ccmexec not yet registered" }
+          if ($svc.Status -ne 'Running') { throw "ccmexec status is $($svc.Status)" }
+          $Ansible.Result = @{
+            status = $svc.Status.ToString()
+            start_type = $svc.StartType.ToString()
+          }
+      register: ccm_wait
+      until: ccm_wait is succeeded
+      retries: 15
+      delay: 30
+      changed_when: false
+
+    - name: Trigger a Machine Policy Retrieval Cycle
+      # Once ccmexec is up, ask it to pull machine policy immediately
+      # so NAA and other secrets land in the local WMI cache without
+      # waiting on the default 60-minute schedule.
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'SilentlyContinue'
+          Invoke-WmiMethod -Namespace root\ccm -Class SMS_Client -Name TriggerSchedule -ArgumentList '{00000000-0000-0000-0000-000000000021}' | Out-Null
+          $Ansible.Result = @{ triggered = 'machine_policy_retrieval' }
+      changed_when: false
+
+    - name: Wait for NAA credential to be present in the client policy cache
+      # CRED-1 primitive check: CCM_NetworkAccessAccount populated in
+      # root\ccm\policy\machine\ActualConfig means the client has pulled
+      # NAA policy from the MP and cached the (DPAPI-encrypted) creds
+      # locally. This is what SharpSCCM / sccmhunter local commands
+      # target.
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $naa = Get-CimInstance -Namespace 'root\ccm\policy\machine\ActualConfig' -ClassName CCM_NetworkAccessAccount -ErrorAction SilentlyContinue
+          if (-not $naa) { throw "CCM_NetworkAccessAccount not yet in client policy cache" }
+          $Ansible.Result = @{
+            naa_count = @($naa).Count
+            first_username_present = [bool]($naa | Select-Object -First 1).NetworkAccessUsername
+            note = 'Password is DPAPI-encrypted; CRED-1 exercise decrypts it client-side.'
+          }
+      register: naa_check
+      until: naa_check is succeeded
+      retries: 15
+      delay: 60
+      changed_when: false
+
+    - name: Show NAA cache state (CRED-1 readiness)
+      ansible.builtin.debug:
+        var: naa_check.result
