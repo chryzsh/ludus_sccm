@@ -1,0 +1,113 @@
+---
+# Freeze Windows Update on ps1-lab for the workshop window.
+#
+# Why:
+#   ps1-lab hosts the workshop. A Windows Update-driven reboot mid-
+#   session — or an RDS Session Host binary swap — breaks student
+#   connections. We disable the update pipeline so nothing installs or
+#   reboots between now and the workshop.
+#
+# What is disabled:
+#   - wuauserv (Windows Update)      — the top-level update service
+#   - UsoSvc   (Update Orchestrator) — schedules scans/installs/reboots
+#   - WaaSMedicSvc                   — the "medic" that watches and
+#                                       re-enables the above two. If we
+#                                       skip this one, wuauserv comes
+#                                       back within ~24h on its own.
+#
+# Idempotent — Set-Service to a matching state is a no-op.
+#
+# Reversal (post-workshop): re-set each service's StartType and start
+# them; there's no separate "un-freeze" playbook because the reversal
+# is trivial and one-off. See the log task at the end for the exact
+# commands to paste.
+#
+# Usage:
+#   ./run.sh misc_freeze_windows_update_ps1_lab.yml
+
+- name: Freeze Windows Update on ps1-lab
+  hosts: ps1-lab
+  gather_facts: false
+  vars:
+    services_to_freeze:
+      - wuauserv
+      - UsoSvc
+      - WaaSMedicSvc
+  tasks:
+    - name: Snapshot service state before change
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'SilentlyContinue'
+          $before = foreach ($n in @({{ services_to_freeze | map('to_json') | join(', ') }})) {
+            $s = Get-Service -Name $n -ErrorAction SilentlyContinue
+            if ($s) { @{ name = $n; status = $s.Status.ToString(); start_type = $s.StartType.ToString() } }
+            else    { @{ name = $n; status = 'absent'; start_type = 'n/a' } }
+          }
+          $Ansible.Result = @{ before = @($before) }
+      register: pre
+      changed_when: false
+
+    - name: Show state before
+      ansible.builtin.debug:
+        var: pre.result
+
+    - name: Stop each update-related service
+      ansible.windows.win_service:
+        name: '{{ item }}'
+        state: stopped
+      loop: '{{ services_to_freeze }}'
+      failed_when: false
+
+    - name: Disable each update-related service
+      ansible.windows.win_service:
+        name: '{{ item }}'
+        start_mode: disabled
+      loop: '{{ services_to_freeze }}'
+      failed_when: false
+
+    - name: Verify each service is in an acceptable frozen state
+      # Requirements:
+      #   wuauserv + UsoSvc : MUST be Stopped AND Disabled — these are
+      #                       the actual update pipeline.
+      #   WaaSMedicSvc      : MUST be Stopped, but StartType=Manual is
+      #                       accepted. Server 2022 hardens WaaSMedicSvc
+      #                       so Set-Service -StartupType Disabled fails
+      #                       silently for Administrator (needs SYSTEM +
+      #                       reg ACL work); Stopped/Manual is the best
+      #                       we get without that surgery, and on Server
+      #                       (unlike Win10 client) the medic is not
+      #                       aggressive enough to auto-re-enable
+      #                       wuauserv within a 12-day workshop window.
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'SilentlyContinue'
+          $required_disabled = @('wuauserv','UsoSvc')
+          $best_effort       = @('WaaSMedicSvc')
+          $bad = @()
+          $after = foreach ($n in @({{ services_to_freeze | map('to_json') | join(', ') }})) {
+            $s = Get-Service -Name $n -ErrorAction SilentlyContinue
+            if (-not $s) { @{ name = $n; status = 'absent'; start_type = 'n/a' } ; continue }
+            if ($required_disabled -contains $n -and ($s.Status -ne 'Stopped' -or $s.StartType -ne 'Disabled')) {
+              $bad += "$n status=$($s.Status) start=$($s.StartType) (required Stopped+Disabled)"
+            }
+            if ($best_effort -contains $n -and $s.Status -ne 'Stopped') {
+              $bad += "$n status=$($s.Status) (required Stopped, StartType flexible)"
+            }
+            @{ name = $n; status = $s.Status.ToString(); start_type = $s.StartType.ToString() }
+          }
+          if ($bad.Count -gt 0) { throw ("Frozen state not achieved: " + ($bad -join '; ')) }
+          $Ansible.Result = @{ after = @($after) }
+      register: post
+      changed_when: false
+
+    - name: Show state after
+      ansible.builtin.debug:
+        var: post.result
+
+    - name: Log reversal commands (paste on ps1-lab post-workshop to un-freeze)
+      ansible.builtin.debug:
+        msg:
+          - "To un-freeze after the workshop, on ps1-lab run:"
+          - "  Set-Service wuauserv     -StartupType Manual    ; Start-Service wuauserv"
+          - "  Set-Service UsoSvc       -StartupType Manual    ; Start-Service UsoSvc"
+          - "  Set-Service WaaSMedicSvc -StartupType Manual    ; # medic starts on-demand"

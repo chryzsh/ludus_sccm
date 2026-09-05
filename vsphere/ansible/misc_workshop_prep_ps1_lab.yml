@@ -1,0 +1,134 @@
+---
+# Workshop preparation for ps1-lab.
+#
+# Layers on top of windows_base's Defender-off state (which sets
+# DisableAntiSpyware=1 and stops WinDefend) with belt-and-braces:
+#   - Explicit path exclusion for C:\tools in the Policies subtree AND
+#     the native Defender subtree, so if anything (Windows Update, GP
+#     refresh, ConfigMgr, a stubborn workshop attendee) re-enables
+#     Defender mid-workshop, C:\tools is still allowlisted.
+#   - Ensures C:\tools exists and holds a pinned SharpSCCM.exe (v2.0.13)
+#     so students have the same known-good binary from session start.
+#
+# SharpSCCM is downloaded directly from github.com by the target host
+# (ps1-lab has outbound TCP/443 to github.com in this environment) and
+# checksum-verified so a re-release or CDN swap can't silently alter
+# the binary students run.
+#
+# Idempotent — file download is checksum-guarded, exclusions are
+# registry writes, defender-off keys re-apply cleanly.
+#
+# Usage:
+#   ./run.sh misc_workshop_prep_ps1_lab.yml
+
+- name: Workshop prep on ps1-lab (Defender exclusion + SharpSCCM staging)
+  hosts: ps1-lab
+  gather_facts: false
+  vars:
+    tools_dir: 'C:\tools'
+    sharpsccm_url: 'https://github.com/Mayyhem/SharpSCCM/releases/download/v2.0.13/SharpSCCM.exe'
+    sharpsccm_dest: 'C:\tools\SharpSCCM.exe'
+    # SHA-256 of the v2.0.13 release binary. Pinning it means a silent
+    # re-tag on GitHub can't change what students execute.
+    sharpsccm_sha256: 'd8899a2be24eb768c3f46fbbae885cad2fca1042145a017a0b134c5e0bbc72a0'
+
+  tasks:
+    # ── C:\tools + SharpSCCM ────────────────────────────────────────────
+    - name: Ensure C:\tools directory exists
+      ansible.windows.win_file:
+        path: '{{ tools_dir }}'
+        state: directory
+
+    - name: Download SharpSCCM v2.0.13 to C:\tools (checksum-pinned)
+      ansible.windows.win_get_url:
+        url: '{{ sharpsccm_url }}'
+        dest: '{{ sharpsccm_dest }}'
+        checksum: '{{ sharpsccm_sha256 }}'
+        checksum_algorithm: sha256
+        force: false
+
+    - name: Verify SharpSCCM.exe on disk matches pinned checksum
+      ansible.windows.win_stat:
+        path: '{{ sharpsccm_dest }}'
+        get_checksum: true
+        checksum_algorithm: sha256
+      register: sharpsccm_stat
+      changed_when: false
+      failed_when:
+        - not sharpsccm_stat.stat.exists
+        - sharpsccm_stat.stat.checksum | default('') != sharpsccm_sha256
+
+    # ── Defender: reinforce off + exclusion ─────────────────────────────
+    - name: Ensure DisableAntiSpyware = 1 in Policies subtree
+      ansible.windows.win_regedit:
+        path: 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender'
+        name: DisableAntiSpyware
+        data: 1
+        type: dword
+
+    - name: Ensure DisableRealtimeMonitoring = 1 in Policies subtree
+      ansible.windows.win_regedit:
+        path: 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection'
+        name: DisableRealtimeMonitoring
+        data: 1
+        type: dword
+
+    - name: Add C:\tools exclusion via Policies subtree (GP-managed)
+      # The Policies subtree is what Defender reads on group-policy
+      # refresh. Writing here means the exclusion survives even if
+      # something toggles the Defender service on later.
+      ansible.windows.win_regedit:
+        path: 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Exclusions\Paths'
+        name: '{{ tools_dir }}'
+        data: 0
+        type: dword
+
+    - name: Add C:\tools exclusion via Add-MpPreference (best-effort)
+      # The native Defender exclusion subtree
+      # (HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions) is ACL'd
+      # so only SYSTEM/TrustedInstaller can write — even the local
+      # Administrator gets "Requested registry access is not allowed."
+      # Instead try the Defender API, which internally has the rights
+      # to update the runtime list. Soft-fail if WinDefend is stopped:
+      # the Policies-subtree exclusion set above is what matters for
+      # persistence, and Defender will pick that up if it ever starts.
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          try {
+            Add-MpPreference -ExclusionPath '{{ tools_dir }}' -ErrorAction Stop
+            $Ansible.Result = @{ method = 'Add-MpPreference'; succeeded = $true }
+          } catch {
+            $Ansible.Result = @{
+              method    = 'Add-MpPreference'
+              succeeded = $false
+              note      = 'Skipped — WinDefend stopped or Defender module unavailable. Policies-subtree exclusion (set above) will apply on next Defender policy refresh.'
+              error     = $_.Exception.Message
+            }
+          }
+      changed_when: false
+
+    # ── Report ──────────────────────────────────────────────────────────
+    - name: Report final state
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'SilentlyContinue'
+          $sha = (Get-FileHash -Algorithm SHA256 '{{ sharpsccm_dest }}').Hash
+          $svc = Get-Service WinDefend -ErrorAction SilentlyContinue
+          $policyExcl = (Get-Item 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Exclusions\Paths' -ErrorAction SilentlyContinue).GetValueNames()
+          $nativeExcl = (Get-Item 'HKLM:\SOFTWARE\Microsoft\Windows Defender\Exclusions\Paths' -ErrorAction SilentlyContinue).GetValueNames()
+          $Ansible.Result = @{
+            sharpsccm_path        = '{{ sharpsccm_dest }}'
+            sharpsccm_sha256      = $sha
+            windefend_status      = if ($svc) { $svc.Status.ToString() } else { 'absent' }
+            windefend_start_type  = if ($svc) { $svc.StartType.ToString() } else { 'n/a' }
+            policy_exclusions     = @($policyExcl)
+            native_exclusions     = @($nativeExcl)
+            disable_antispyware   = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender').DisableAntiSpyware
+          }
+      register: report
+      changed_when: false
+
+    - name: Show workshop-prep state
+      ansible.builtin.debug:
+        var: report.result
