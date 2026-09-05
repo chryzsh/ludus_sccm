@@ -143,7 +143,7 @@ Based on documentation review; the autosave is authoritative:
 
 - **ps1-dev Win11 template quirks (resolved but noted for future clones).**
   - Firmware default in the vSphere provider is BIOS; the Win11 template is EFI/GPT. Provider does not inherit `firmware` from the source template, so a BIOS clone lands on PXE boot. `vms.tf` now sets `firmware = "efi"` conditionally on `template_key == "workstation"`.
-  - Win11 template's built-in Administrator is disabled; a separate `Admin` local user (packer-created) is what accepts WinRM. vSphere's `customize.admin_password` targets Administrator (which stays disabled) and does not create/enable Admin. Handled via a gitignored `host_vars/ps1-dev/local.yml` override (`ansible_user: Admin`, `ansible_password: Welcome1`) for pre-domain-join phases. After phase 15 (domain join) the domain admin credential takes over.
+  - Win11 template's built-in Administrator is disabled; a separate `Admin` local user (packer-created) is what accepts WinRM. vSphere's `customize.admin_password` targets Administrator (which stays disabled) and does not create/enable Admin. Handled via a gitignored `host_vars/ps1-dev/local.yml` override (`ansible_user: Admin`, `ansible_password: <REDACTED — see ENVIRONMENT.local.md>`) for pre-domain-join phases. After phase 15 (domain join) the domain admin credential takes over.
 
 ## 4. Sequenced work plan
 
