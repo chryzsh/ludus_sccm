@@ -1,0 +1,77 @@
+---
+# Grant EXEC-2 lab path — Script Approvers custom SCCM security role on the NAA.
+#
+# What this does:
+#   1. Creates a custom SCCM security role "Script Approvers" (Site: Read;
+#      SMS Scripts: Read, Approve, Modify) copied from Read-only Analyst.
+#   2. Adds MAYYHEM\networkaccess (the NAA) as an SCCM administrative user
+#      with that role.
+#
+# Why:
+#   The NAA ships with no SCCM RBAC rights. This wires a deliberate lab
+#   misconfiguration so that credential access to the NAA (CRED-1/CRED-3)
+#   leads to script-approval rights usable toward EXEC-2 (SCCM Run Scripts).
+#   Execution requires a separate account — in the workshop, a Full
+#   Administrator obtained via TAKEOVER-1 in the previous lab. The
+#   two-cred chain is intentional.
+#
+# Scope:
+#   Runs only on ps1-pss (the primary site server). Idempotent:
+#   create_script_approver_role reconciles the permission hashtable onto
+#   the role every run; add_administrative_user no-ops if the NAA already
+#   has the role.
+#
+# Toggled by ludus_sccm_naa_grant_script_approver in
+# roles/install_primary_site/defaults/main.yml (default: false; set to
+# true in new-config.yml for this lab). This playbook is the surgical
+# apply for an already-deployed range where re-running site.yml would
+# needlessly re-hit the whole install_primary_site chain.
+#
+# Usage:
+#   ./run.sh misc_grant_naa_script_approver.yml
+
+- name: Grant Script Approvers custom role to NAA on ps1-pss (EXEC-2 lab path)
+  hosts: ps1-pss
+  gather_facts: false
+  tasks:
+    - name: Run install_primary_site's config_naa_admin task file
+      ansible.builtin.include_role:
+        name: mayyhem.ludus_sccm.install_primary_site
+        tasks_from: config_naa_admin.yml
+
+    - name: Verify Script Approvers role and NAA admin user landed
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module "C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole\bin\ConfigurationManager.psd1"
+          $sc = 'PS1'
+          if (-not (Get-PSDrive -Name $sc -PSProvider CMSite -ErrorAction SilentlyContinue)) {
+              $prov = (Get-ItemProperty 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\ConfigMgr10\AdminUI\Connection' -Name Server).Server
+              New-PSDrive -Name $sc -PSProvider CMSite -Root $prov | Out-Null
+          }
+          Set-Location "$($sc):\"
+          $role = Get-CMSecurityRole -Name 'Script Approvers' -ErrorAction SilentlyContinue
+          $user = Get-CMAdministrativeUser -Name 'MAYYHEM\networkaccess' -ErrorAction SilentlyContinue
+          $Ansible.Result = @{
+              role_exists           = [bool]$role
+              role_id               = if ($role) { [string]$role.RoleID } else { $null }
+              naa_admin_user_exists = [bool]$user
+              naa_role_names        = if ($user) { @($user.RoleNames) } else { @() }
+          }
+          if (-not $role) { throw "Script Approvers role not found after deploy" }
+          if (-not $user) { throw "MAYYHEM\networkaccess not an admin user after deploy" }
+          if ($user.RoleNames -notcontains 'Script Approvers') {
+              throw "MAYYHEM\networkaccess exists but does not have Script Approvers role: $($user.RoleNames -join ', ')"
+          }
+      vars:
+        ansible_become: true
+        ansible_become_method: runas
+        ansible_become_user: 'MAYYHEM\domainadmin'
+        ansible_become_password: '{{ defaults.ad_domain_admin_password }}'
+        ansible_become_flags: "logon_type=interactive logon_flags=with_profile"
+      register: verify
+      changed_when: false
+
+    - name: Show verification result
+      ansible.builtin.debug:
+        var: verify.result
