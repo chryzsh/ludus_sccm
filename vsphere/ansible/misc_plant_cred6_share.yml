@@ -1,0 +1,137 @@
+---
+# Plant a non-default SMB share on ps1-pss with a hardcoded-cred
+# PowerShell utility, so CRED-6 (loot creds from SCCM site server
+# shares) becomes a productive attack path in this lab.
+#
+# Baseline lab does not seed anything loot-able on ps1-dp or
+# ps1-pss — stock SCCM leaves only WIM/boot media in SCCMContentLib$,
+# and no non-default shares. This plant matches the "IT engineer
+# left creds in an automation script" pattern from the CRED-6 doc's
+# Real-life-examples section.
+#
+# What this creates:
+#   - AD user MAYYHEM\svc_sccm_maint (password: Password123!, note
+#     the trailing !), described as an IT-Ops automation account
+#   - svc_sccm_maint as local admin on ps1-dev (only ps1-dev)
+#   - C:\Scripts on ps1-pss, exposed as SMB share "Scripts",
+#     domain-user-readable, containing Reset-SCCMClientCache.ps1
+#     with the credential hardcoded in cleartext
+#
+# Chain narrative:
+#   Student enumerates site-system shares → finds "Scripts" (not in
+#   the RECON-2 baseline list) → downloads Reset-SCCMClientCache.ps1
+#   → greps for password → gets svc_sccm_maint / Password123! → uses
+#   it to WinRM/RDP into ps1-dev → runs CRED-1/CRED-3-style NAA cache
+#   extraction from the client → back into the SCCM chain, having
+#   never touched an ELEVATE primitive.
+#
+# Idempotent: every task no-ops on re-run.
+#
+# Usage:
+#   ./run.sh misc_plant_cred6_share.yml
+
+- name: Create svc_sccm_maint AD account on the DC
+  hosts: dc
+  gather_facts: false
+  vars:
+    svc_maint_username: svc_sccm_maint
+    svc_maint_password: 'Password123!'
+  tasks:
+    - name: Create svc_sccm_maint user in AD
+      microsoft.ad.user:
+        name: '{{ svc_maint_username }}'
+        password: '{{ svc_maint_password }}'
+        password_never_expires: true
+        state: present
+        display_name: SCCM Maintenance Service Account
+        description: 'IT-Ops SCCM client cache maintenance automation. Ticket IT-4419.'
+      vars:
+        ansible_become: true
+        ansible_become_method: runas
+        ansible_become_user: '{{ ludus_domain_netbios_name }}\{{ defaults.ad_domain_admin }}'
+        ansible_become_password: '{{ defaults.ad_domain_admin_password }}'
+        ansible_become_flags: "logon_type=interactive logon_flags=with_profile"
+
+- name: Grant svc_sccm_maint local admin on ps1-dev
+  hosts: ps1-dev
+  gather_facts: false
+  tasks:
+    - name: Add MAYYHEM\svc_sccm_maint to local Administrators
+      ansible.windows.win_group_membership:
+        name: Administrators
+        members:
+          - '{{ ludus_domain_netbios_name }}\svc_sccm_maint'
+        state: present
+      vars:
+        ansible_become: true
+        ansible_become_method: runas
+        ansible_become_user: '{{ ludus_domain_netbios_name }}\{{ defaults.ad_domain_admin }}'
+        ansible_become_password: '{{ defaults.ad_domain_admin_password }}'
+        ansible_become_flags: "logon_type=interactive logon_flags=with_profile"
+
+- name: Plant "Scripts" share with hardcoded creds on ps1-dp
+  hosts: ps1-dp
+  gather_facts: false
+  tasks:
+    - name: Create C:\Scripts directory
+      ansible.windows.win_file:
+        path: C:\Scripts
+        state: directory
+
+    - name: Drop Reset-SCCMClientCache.ps1 with hardcoded cred
+      ansible.windows.win_copy:
+        dest: C:\Scripts\Reset-SCCMClientCache.ps1
+        content: |
+          # Scheduled task: Reset-SCCMClientCache
+          # Runs weekly on drift-prone dev machines. Owner: IT-Ops.
+          #
+          # TODO: move creds out of the script before rolling this to prod.
+          #       (Ticket IT-4419)
+
+          $ServiceAccount = "MAYYHEM\svc_sccm_maint"
+          $Password       = "Password123!"
+
+          $Target = if ($args[0]) { $args[0] } else { "ps1-dev" }
+
+          $SecPass = ConvertTo-SecureString -String $Password -AsPlainText -Force
+          $Cred    = New-Object System.Management.Automation.PSCredential($ServiceAccount, $SecPass)
+
+          Invoke-Command -ComputerName $Target -Credential $Cred -ScriptBlock {
+              Restart-Service -Name CcmExec -Force
+              Remove-Item -Path 'C:\Windows\ccmcache\*' -Recurse -Force -ErrorAction SilentlyContinue
+              Start-Service -Name CcmExec
+          }
+
+    - name: Expose C:\Scripts as SMB share "Scripts" (domain-authenticated read)
+      ansible.windows.win_share:
+        name: Scripts
+        path: C:\Scripts
+        list: true
+        read: '{{ ludus_domain_netbios_name }}\Domain Users'
+        full: 'BUILTIN\Administrators'
+        state: present
+
+    - name: Verify Scripts share is enumerable and file is present
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $share = Get-SmbShare -Name Scripts -ErrorAction SilentlyContinue
+          $file  = Get-Item C:\Scripts\Reset-SCCMClientCache.ps1 -ErrorAction SilentlyContinue
+          $access = Get-SmbShareAccess -Name Scripts -ErrorAction SilentlyContinue |
+              ForEach-Object { "$($_.AccountName):$($_.AccessRight)" }
+          $Ansible.Result = @{
+              share_exists      = [bool]$share
+              share_path        = if ($share) { $share.Path } else { $null }
+              share_folder_enum = if ($share) { [bool]$share.FolderEnumerationMode -eq $false -or $share.FolderEnumerationMode -eq 'Unrestricted' } else { $false }
+              file_exists       = [bool]$file
+              file_size         = if ($file) { [int]$file.Length } else { 0 }
+              share_access      = @($access)
+          }
+          if (-not $share) { throw "Scripts share missing after deploy" }
+          if (-not $file)  { throw "Reset-SCCMClientCache.ps1 missing after deploy" }
+      register: verify
+      changed_when: false
+
+    - name: Show verification result
+      ansible.builtin.debug:
+        var: verify.result
