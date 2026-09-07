@@ -45,3 +45,12 @@ data "vsphere_virtual_machine" "workstation_template" {
   name          = var.vsphere_workstation_template
   datacenter_id = data.vsphere_datacenter.dc.id
 }
+
+# Ubuntu template for the per-student workshop VMs. Optional: if
+# vsphere_linux_template is empty (default), this data source resolves
+# to zero instances and no linux-tier VMs are created.
+data "vsphere_virtual_machine" "linux_template" {
+  count         = var.vsphere_linux_template == "" ? 0 : 1
+  name          = var.vsphere_linux_template
+  datacenter_id = data.vsphere_datacenter.dc.id
+}

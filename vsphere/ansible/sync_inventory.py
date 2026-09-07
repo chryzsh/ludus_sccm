@@ -41,6 +41,13 @@ PS1_TIER = {
 # Non-SCCM systems used to simulate a third-party integration for
 # TAKEOVER-9 lab reproduction. See docs/takeover-9-lab-plan.md.
 THIRD_PARTY_TIER = {"monitor"}
+# Per-student Ubuntu attack workstations for the workshop. Not
+# domain-joined; students SSH in and use them as an attack platform
+# against the SCCM hierarchy. Provisioned by
+# misc_provision_ubuntu_students.yml. Default connection user is
+# `ansible` (the account baked into the ubuntu-2604-template with the
+# ~/opt/keys/id_ecdsa authorized_keys), not `ubuntu`.
+STUDENTS_TIER = {f"ubuntu-student{i:02d}" for i in range(1, 13)}
 
 
 def _extract_vms(state: dict) -> dict[str, dict]:
@@ -89,6 +96,43 @@ def _emit_inventory(vms: dict[str, dict], domain: str) -> str:
     cas_hosts = [h for h in CAS_TIER if h in vms]
     ps1_hosts = [h for h in PS1_TIER if h in vms]
     tp_hosts = [h for h in THIRD_PARTY_TIER if h in vms]
+    student_hosts = sorted(h for h in STUDENTS_TIER if h in vms)
+
+    # Group-vars for the student tier: SSH via the ecdsa key baked into
+    # the Ubuntu template. Ansible connects as `ubuntu` (the cloud-image
+    # default user) for the initial bootstrap; the provisioning playbook
+    # creates the per-VM studentNN account and enables password auth,
+    # but ansible itself keeps using the key + `ubuntu` user for
+    # subsequent runs (deterministic, key auth beats password auth for
+    # automation).
+    students_block = ""
+    if student_hosts:
+        students_block = (
+            # `ansible_password` is set at group_vars/all scope for
+            # the Windows WinRM tier. It leaks into the SSH connection
+            # for these ubuntu hosts unless overridden AT A HIGHER
+            # PRECEDENCE than group_vars/all — inline inventory vars
+            # aren't enough. Any playbook targeting students_tier must
+            # override `ansible_password: ""` at play level (see
+            # misc_provision_ubuntu_students.yml). Key-only auth here.
+            "    students_tier:\n"
+            "      vars:\n"
+            "        ansible_connection: ssh\n"
+            "        ansible_user: ansible\n"
+            "        ansible_port: 22\n"
+            "        ansible_ssh_private_key_file: ~/opt/keys/id_ecdsa\n"
+            "        ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=publickey'\n"
+            "        ansible_python_interpreter: /usr/bin/python3\n"
+            "        ansible_become: true\n"
+            "        ansible_become_method: sudo\n"
+            "      hosts:\n"
+        )
+        for h in student_hosts:
+            info = vms.get(h)
+            if not info or not info.get("ip"):
+                students_block += f"        {h}:  # WARNING: no IP in tfstate for {h}\n"
+            else:
+                students_block += f"        {h}:\n          ansible_host: {info['ip']}\n"
 
     return (
         "# GENERATED FILE — do not commit. Regenerate with sync_inventory.py.\n"
@@ -104,7 +148,8 @@ def _emit_inventory(vms: dict[str, dict], domain: str) -> str:
         + (_group('third_party_tier', tp_hosts) if tp_hosts else '')
         + f"{_group('cas_tier', cas_hosts)}"
         f"{_group('ps1_tier', ps1_hosts)}"
-        "    domain_controllers:\n"
+        + students_block
+        + "    domain_controllers:\n"
         "      hosts:\n"
         f"{_hostblock('dc')}"
         "    sccm_site_servers:\n"

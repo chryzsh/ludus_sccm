@@ -133,4 +133,33 @@ locals {
       template_key = "server"
     }
   }
+
+  # ── Per-student Ubuntu workshop VMs ───────────────────────────────────
+  # One Ubuntu 26.04 VM per attendee. Not domain-joined — students SSH
+  # into their own VM (as `ubuntu`, using the key baked into the
+  # template) and use it as an attack workstation against the SCCM
+  # hierarchy. Provisioning of the venv + tools is done by
+  # misc_provision_ubuntu_students.yml.
+  ubuntu_students = {
+    for i in range(1, 13) : format("ubuntu-student%02d", i) => {
+      hostname  = format("ubuntu-student%02d", i)
+      cpus      = 2
+      memory_mb = 4096
+      # 60 GiB matches the Ubuntu template's base disk — vSphere refuses
+      # to clone with a smaller disk than the source template. Plenty
+      # of headroom for the pentest venv, tool checkouts, and any
+      # workshop scratch space.
+      disk_gb      = 60
+      template_key = "linux"
+    }
+  }
+
+  # Merge both maps so vms.tf still iterates a single map. Doing the
+  # merge here (rather than in vms.tf) keeps the "shape of the lab" in
+  # one place. If vsphere_linux_template is empty, ubuntu_students is
+  # still declared but the linux-template data source resolves to zero
+  # instances and vms.tf will not create the linux VMs — this is safe
+  # for now (validation on vm_ips will still fail without linux IPs;
+  # remove those validation entries too if you want to skip the tier).
+  all_vms = merge(local.vm_config, local.ubuntu_students)
 }

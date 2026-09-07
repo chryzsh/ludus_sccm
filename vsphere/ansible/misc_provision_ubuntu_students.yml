@@ -1,0 +1,375 @@
+---
+# Provision the 10 per-student Ubuntu 26.04 workshop VMs.
+#
+# What this playbook does, per VM:
+#   1. Creates a local user matching the hostname suffix
+#      (ubuntu-student03 → user 'student03').
+#   2. Sets the user password to Password123, enables SSH password auth,
+#      grants NOPASSWD sudo.
+#   3. Installs uv (Astral) per-user under ~/.local/bin.
+#   4. Creates a single venv at ~/venv/pentest that holds every tool
+#      the workshop needs.
+#   5. Installs impacket + ldeep into that venv via `uv pip`.
+#   6. Git-clones sccmhunter (garrettfoster13) and PXEHacker (chryzsh)
+#      under ~/tools and installs each repo's requirements.txt into the
+#      pentest venv.
+#   7. Auto-activates the venv on login + adds convenience aliases so
+#      students type `sccmhunter …` / `PXEHacker …` / `ldeep …` /
+#      `impacket-secretsdump …` directly, without remembering paths.
+#
+# Bootstrap connection is as `ubuntu` (the cloud-image default user
+# baked into the template) using the ecdsa key from ~/opt/keys, per
+# the inventory group_vars set by sync_inventory.py. Once studentNN
+# exists on the box, ansible keeps using `ubuntu` — password auth for
+# studentNN is only there so students can SSH in interactively.
+#
+# Idempotent: safe to re-run. Each task's guard is described inline.
+#
+# Usage:
+#   ./run.sh misc_provision_ubuntu_students.yml
+#   # Or one VM:
+#   ./run.sh misc_provision_ubuntu_students.yml --limit ubuntu-student03
+
+- name: Provision Ubuntu student workshop VMs
+  hosts: students_tier
+  gather_facts: true
+  become: true
+
+  vars:
+    # ubuntu-studentNN → studentNN
+    student_username: "{{ inventory_hostname | regex_replace('^ubuntu-', '') }}"
+    student_password: "Password123"
+    # Pre-computed SHA-512 crypt hash of the plaintext password above.
+    # Generated once via:
+    #   openssl passwd -6 -salt $(openssl rand -hex 8) 'Password123'
+    # We hard-code it instead of using {{ student_password |
+    # password_hash('sha512') }} so the playbook doesn't need passlib
+    # (or Python's crypt module, which was removed in Python 3.13+)
+    # installed on the ansible controller. If the plaintext ever
+    # changes, regenerate this hash.
+    student_password_hash: '$6$ffbe9aa1fb2b8bdb$HzeEZ50gW250uqdBnjEeqnjJ/LljXk/RmPo4.059wGzDvqGRfTq5aGCMbzcNdrhPK8e3pA5x35MK9uxYzFyhx0'
+
+    # Override the WinRM password from group_vars/all. Play-level vars
+    # have higher precedence than any inventory var, so this actually
+    # sticks — without it ansible sees ansible_password=<winrm value>,
+    # tries to pass it to ssh, and demands sshpass. These hosts are
+    # SSH key-only via ~/opt/keys/id_ecdsa.
+    ansible_password: ""
+
+    # Tool repos to git-clone. Each entry needs a `name`, a `url`, and
+    # an optional `requirements` (path within the repo, relative — the
+    # default 'requirements.txt' fits sccmhunter, PXEHacker, and
+    # RelayInformer). PetitPotam has no requirements.txt (uses
+    # impacket only); the install task skips gracefully when the file
+    # doesn't exist.
+    tool_repos:
+      - name: sccmhunter
+        url: "https://github.com/garrettfoster13/sccmhunter.git"
+        requirements: "requirements.txt"
+      - name: PXEHacker
+        url: "https://github.com/chryzsh/PXEHacker.git"
+        requirements: "requirements.txt"
+      - name: RelayInformer
+        url: "https://github.com/zyn3rgy/RelayInformer.git"
+        requirements: "requirements.txt"
+      - name: PetitPotam
+        url: "https://github.com/topotam/PetitPotam.git"
+        requirements: "requirements.txt"
+
+    # pypi-installable tools that don't need a special ldap3 fork.
+    pip_tools:
+      - impacket
+
+    # ldeep needs `ENCRYPT` from ldap3, only present in cannatag's
+    # unreleased dev branch — not on pypi in any version. Install
+    # ldeep + its ldap3 dep in one shot with pyasn1 pinned to the
+    # version the dev branch was tested against; pyasn1 >= 0.5 breaks
+    # ldap3-dev's imports. Order matters: pyasn1 first so it's already
+    # present when ldap3 builds; then ldap3 from git; then ldeep,
+    # which sees its ldap3 dep already satisfied and doesn't try to
+    # pull mainline back in. `--reinstall` forces uv to replace any
+    # earlier install of these three.
+    ldeep_stack:
+      - "pyasn1==0.4.8"
+      - "git+https://github.com/cannatag/ldap3.git@dev"
+      - ldeep
+
+  tasks:
+    # ── Wait for the VM to actually be up ────────────────────────────
+    - name: Wait for SSH to answer
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+        sleep: 5
+
+    # ── OS-level prereqs ─────────────────────────────────────────────
+    - name: Install prerequisite packages
+      # libkrb5-dev + libssl-dev + libffi-dev + python3-dev are needed
+      # so pip can build gssapi from source (an impacket transitive
+      # dep). Without them uv pip install impacket fails at
+      # `krb5-config --libs gssapi`. build-essential provides gcc + make.
+      ansible.builtin.apt:
+        name:
+          - git
+          - curl
+          - ca-certificates
+          - python3
+          - python3-venv
+          - python3-pip
+          - python3-dev
+          - build-essential
+          - libkrb5-dev
+          - libssl-dev
+          - libffi-dev
+          - sudo
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    # ── Local user + password + sudo ─────────────────────────────────
+    - name: Create student local user
+      # update_password: on_create means the password is only set at
+      # user-creation time. Re-runs never re-hash a password chrisr
+      # may have rotated by hand on a running VM.
+      ansible.builtin.user:
+        name: "{{ student_username }}"
+        password: "{{ student_password_hash }}"
+        update_password: on_create
+        shell: /bin/bash
+        groups: sudo
+        append: true
+        create_home: true
+        state: present
+
+    - name: NOPASSWD sudo for student
+      ansible.builtin.copy:
+        dest: "/etc/sudoers.d/90-{{ student_username }}"
+        content: "{{ student_username }} ALL=(ALL) NOPASSWD:ALL\n"
+        owner: root
+        group: root
+        mode: '0440'
+        validate: 'visudo -cf %s'
+
+    # ── SSH: enable password auth ────────────────────────────────────
+    - name: Enable SSH password auth via drop-in config
+      # Ubuntu 26.04's sshd_config Include's sshd_config.d/*.conf, so a
+      # tiny drop-in wins over the distro default without touching the
+      # main config file.
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/60-workshop-passwordauth.conf
+        content: |
+          # Ansible-managed: enables password auth for the workshop.
+          PasswordAuthentication yes
+          PubkeyAuthentication yes
+          KbdInteractiveAuthentication no
+        owner: root
+        group: root
+        mode: '0644'
+      notify: restart ssh
+
+    - name: Flush handlers so sshd restarts before we continue
+      ansible.builtin.meta: flush_handlers
+
+    # ── uv installation (per-user, under ~/.local/bin) ────────────────
+    - name: Install uv (Astral) for the student
+      # Astral's installer drops a static uv binary at ~/.local/bin/uv.
+      # `creates:` makes this a no-op on re-runs.
+      ansible.builtin.shell: |
+        set -eu
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+      args:
+        creates: "/home/{{ student_username }}/.local/bin/uv"
+      become: true
+      become_user: "{{ student_username }}"
+      environment:
+        HOME: "/home/{{ student_username }}"
+
+    # ── Tool checkouts ───────────────────────────────────────────────
+    - name: Ensure ~/tools directory exists
+      ansible.builtin.file:
+        path: "/home/{{ student_username }}/tools"
+        state: directory
+        owner: "{{ student_username }}"
+        group: "{{ student_username }}"
+        mode: '0755'
+
+    - name: Clone tool repos as student
+      # Latest HEAD of each. For a locked-down workshop, pin a version
+      # here (change to `version: <sha>` per entry). Force=false so we
+      # never blow away student edits.
+      ansible.builtin.git:
+        repo: "{{ item.url }}"
+        dest: "/home/{{ student_username }}/tools/{{ item.name }}"
+        version: HEAD
+        force: false
+        update: false  # first run clones; re-runs don't yank the tree
+      become: true
+      become_user: "{{ student_username }}"
+      loop: "{{ tool_repos }}"
+
+    # ── Single shared venv for every tool ────────────────────────────
+    - name: Create pentest venv at ~/venv/pentest
+      ansible.builtin.shell: |
+        set -eu
+        ~/.local/bin/uv venv ~/venv/pentest
+      args:
+        creates: "/home/{{ student_username }}/venv/pentest/bin/python"
+      become: true
+      become_user: "{{ student_username }}"
+      environment:
+        HOME: "/home/{{ student_username }}"
+
+    - name: Ensure the student owns everything under their home
+      # Defensive: if a prior manual `sudo` invocation inside the venv
+      # left root-owned files, subsequent `uv pip install --reinstall`
+      # runs (which run as the student) fail with "Permission denied"
+      # when trying to remove those files. Chown here is cheap and
+      # idempotent.
+      ansible.builtin.file:
+        path: "/home/{{ student_username }}"
+        state: directory
+        owner: "{{ student_username }}"
+        group: "{{ student_username }}"
+        recurse: true
+      changed_when: false
+
+    - name: Install pypi + git tools into pentest venv
+      # `--reinstall` forces uv to (re)install each package regardless
+      # of what's already in the venv. Needed for the ldeep git URL:
+      # a prior run may have installed pypi ldeep, which uv would
+      # otherwise consider "already there" and skip, leaving the
+      # broken (mainline-ldap3) install in place.
+      ansible.builtin.shell: |
+        set -eu
+        ~/.local/bin/uv pip install --reinstall --python ~/venv/pentest/bin/python {{ pip_tools | map('quote') | join(' ') }}
+      become: true
+      become_user: "{{ student_username }}"
+      environment:
+        HOME: "/home/{{ student_username }}"
+      register: pip_install
+      changed_when: "'installed' in pip_install.stderr or 'installed' in pip_install.stdout"
+
+    - name: Install requirements for each git-cloned tool
+      ansible.builtin.shell: |
+        set -eu
+        req="$HOME/tools/{{ item.name }}/{{ item.requirements }}"
+        if [ -f "$req" ]; then
+          ~/.local/bin/uv pip install --python ~/venv/pentest/bin/python -r "$req"
+        fi
+      become: true
+      become_user: "{{ student_username }}"
+      environment:
+        HOME: "/home/{{ student_username }}"
+      loop: "{{ tool_repos }}"
+      register: req_install
+      changed_when: "'installed' in (req_install.stderr | default(''))"
+
+    - name: Create dedicated venv for RelayInformer
+      # RelayInformer's pyproject pins a specific impacket commit +
+      # msldap + ldap3 2.9.1 + pyasn1 0.5.0 that fight our other tools
+      # (fresh impacket, ldeep's ldap3 dev fork). Isolating it in its
+      # own venv means it can have its dep world intact without
+      # breaking the shared pentest venv. Students hit it via the
+      # `relayinformer` alias which points at this venv's binary.
+      ansible.builtin.shell: |
+        set -eu
+        ~/.local/bin/uv venv ~/venv/relayinformer
+      args:
+        creates: "/home/{{ student_username }}/venv/relayinformer/bin/python"
+      become: true
+      become_user: "{{ student_username }}"
+      environment:
+        HOME: "/home/{{ student_username }}"
+
+    - name: Install RelayInformer (with full deps) into its own venv
+      # -e for editable so students can pull updates via `git pull` in
+      # ~/tools/RelayInformer/ without reinstalling. Full deps so the
+      # tool's pinned versions actually resolve.
+      ansible.builtin.shell: |
+        set -eu
+        ~/.local/bin/uv pip install --python ~/venv/relayinformer/bin/python -e ~/tools/RelayInformer/Python/
+      become: true
+      become_user: "{{ student_username }}"
+      environment:
+        HOME: "/home/{{ student_username }}"
+      register: relayinformer_install
+      changed_when: "'installed' in (relayinformer_install.stderr | default(''))"
+
+    - name: Install ldeep stack LAST (overrides ldap3 to dev-branch fork)
+      # Must run AFTER pypi + git-cloned tool requirements are
+      # installed, because those (impacket, sccmhunter/requirements.txt
+      # etc.) pull mainline ldap3 as a transitive dep and would clobber
+      # a dev-branch install placed earlier. Running last means the
+      # dev-branch ldap3 + pinned pyasn1 are what the venv ends up with,
+      # so ldeep's `from ldap3 import ENCRYPT` resolves. Other tools
+      # that use ldap3 (mostly for LDAP queries) work fine with the
+      # dev-branch API too — it's a superset of mainline 2.9.
+      ansible.builtin.shell: |
+        set -eu
+        ~/.local/bin/uv pip install --reinstall --python ~/venv/pentest/bin/python {{ ldeep_stack | map('quote') | join(' ') }}
+      become: true
+      become_user: "{{ student_username }}"
+      environment:
+        HOME: "/home/{{ student_username }}"
+      register: ldeep_install
+      changed_when: "'installed' in (ldeep_install.stderr | default(''))"
+
+    # ── Login UX: activate venv, add aliases ─────────────────────────
+    - name: Auto-activate pentest venv + tool aliases in .bashrc
+      # blockinfile is idempotent via the marker. Sits at end of the
+      # student's default .bashrc so it wins over anything above.
+      ansible.builtin.blockinfile:
+        path: "/home/{{ student_username }}/.bashrc"
+        marker: "# {mark} ANSIBLE MANAGED — pentest venv + tool wrappers"
+        create: true
+        owner: "{{ student_username }}"
+        group: "{{ student_username }}"
+        mode: '0644'
+        block: |
+          # Auto-activate the pentest venv on interactive shells so
+          # impacket-* commands and ldeep are on PATH without ceremony.
+          if [ -f "$HOME/venv/pentest/bin/activate" ]; then
+            . "$HOME/venv/pentest/bin/activate"
+          fi
+          # uv itself lives under ~/.local/bin.
+          case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH";; esac
+          # Wrappers for the git-cloned script tools, so students just
+          # type the tool name from anywhere.
+          alias sccmhunter='python "$HOME/tools/sccmhunter/sccmhunter.py"'
+          alias PXEHacker='python "$HOME/tools/PXEHacker/pxehacker.py"'
+          alias PetitPotam='python "$HOME/tools/PetitPotam/PetitPotam.py"'
+          # RelayInformer lives in its own venv (its pinned deps
+          # would fight the shared pentest venv). Alias to that venv's
+          # binary so students still just type `relayinformer`.
+          alias relayinformer='$HOME/venv/relayinformer/bin/relayinformer'
+      become: true
+      become_user: "{{ student_username }}"
+
+    # ── Sanity report ────────────────────────────────────────────────
+    - name: Report installed state
+      ansible.builtin.shell: |
+        set -eu
+        echo "student user: $(id {{ student_username }})"
+        echo "uv:           $(~/.local/bin/uv --version 2>&1 || echo missing)"
+        echo "venv python:  $(~/venv/pentest/bin/python --version 2>&1)"
+        echo "impacket:     $(~/venv/pentest/bin/python -c 'import impacket; print(impacket.__version__)' 2>&1 || echo missing)"
+        echo "ldeep:        $(~/venv/pentest/bin/ldeep --version 2>&1 | head -1 || echo missing)"
+        echo "sccmhunter:     $([ -f ~/tools/sccmhunter/sccmhunter.py ] && echo present || echo missing)"
+        echo "PXEHacker:      $([ -f ~/tools/PXEHacker/pxehacker.py ] && echo present || echo missing)"
+        echo "RelayInformer:  $(~/venv/relayinformer/bin/relayinformer --help >/dev/null 2>&1 && echo 'installed (isolated venv; cmd: relayinformer)' || echo missing)"
+        echo "PetitPotam:     $([ -f ~/tools/PetitPotam/PetitPotam.py ] && echo present || echo missing)"
+      become: true
+      become_user: "{{ student_username }}"
+      environment:
+        HOME: "/home/{{ student_username }}"
+      register: report
+      changed_when: false
+
+    - name: Show per-VM report
+      ansible.builtin.debug:
+        var: report.stdout_lines
+
+  handlers:
+    - name: restart ssh
+      ansible.builtin.service:
+        name: ssh
+        state: restarted

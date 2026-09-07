@@ -62,6 +62,12 @@ variable "vsphere_workstation_template" {
   type        = string
 }
 
+variable "vsphere_linux_template" {
+  description = "Ubuntu 26.04 template name for the per-student workshop VMs. Template must have open-vm-tools installed and an SSH key baked into the initial user (auth via key, not password). Set to empty string to skip cloning the linux tier."
+  type        = string
+  default     = ""
+}
+
 ### Guest customization / network ###
 
 variable "ipv4_netmask" {
@@ -126,7 +132,19 @@ variable "vm_ips" {
       contains(keys(var.vm_ips), "ps1-sec"),
       contains(keys(var.vm_ips), "monitor"),
       contains(keys(var.vm_ips), "ps1-lab"),
+      contains(keys(var.vm_ips), "ubuntu-student01"),
+      contains(keys(var.vm_ips), "ubuntu-student02"),
+      contains(keys(var.vm_ips), "ubuntu-student03"),
+      contains(keys(var.vm_ips), "ubuntu-student04"),
+      contains(keys(var.vm_ips), "ubuntu-student05"),
+      contains(keys(var.vm_ips), "ubuntu-student06"),
+      contains(keys(var.vm_ips), "ubuntu-student07"),
+      contains(keys(var.vm_ips), "ubuntu-student08"),
+      contains(keys(var.vm_ips), "ubuntu-student09"),
+      contains(keys(var.vm_ips), "ubuntu-student10"),
+      contains(keys(var.vm_ips), "ubuntu-student11"),
+      contains(keys(var.vm_ips), "ubuntu-student12"),
     ])
-    error_message = "vm_ips must contain entries for all 15 lab hosts (13 SCCM + 1 monitor third-party + 1 ps1-lab workshop). See locals.tf for the required keys."
+    error_message = "vm_ips must contain entries for all 27 lab hosts (13 SCCM + 1 monitor + 1 ps1-lab + 12 ubuntu-studentNN). See locals.tf for the required keys."
   }
 }
