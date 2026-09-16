@@ -1,0 +1,54 @@
+---
+# Phase 11 — extend the C: partition to its supported max.
+#
+# vSphere honours terraform's disk.size (200 GB on slab-pss, 100 GB on
+# slab-db) so the VMDK arrives at the right size, but the Server 2022
+# template's Windows install only formats the template's original C:
+# partition (~60 GB). Everything beyond that sits as unallocated space
+# at the end of the disk.
+#
+# SCCM setup's prereq check fails hard with "site server must have at
+# least 15GB free" once the pack downloads + any staged content push
+# C:'s free space below 15GB — with a 60 GB C: partition and a full
+# SCCM install already in place, one 2509-sized update pack is enough
+# to trip it (empirically observed on 2026-09-10).
+#
+# The fix is a live NTFS partition extend — no reboot, no data change,
+# no downtime. Idempotent: if the partition already covers the whole
+# disk, Resize-Partition is a no-op.
+#
+# Placed after 10_windows_base so the OS is up and Windows Update etc.
+# are on, and before 15_domain_join so the domain-join has all the
+# room it will ever need for user profiles + staging.
+
+- name: "Grow C: partition to the disk's supported max"
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: "Resize C: to (Get-PartitionSupportedSize).SizeMax"
+      ansible.windows.win_powershell:
+        script: |
+          $part = Get-Partition -DriveLetter C
+          $max  = (Get-PartitionSupportedSize -DriveLetter C).SizeMax
+          $currentGb = [math]::Round($part.Size / 1GB, 2)
+          $maxGb     = [math]::Round($max / 1GB, 2)
+          if ($part.Size -ge ($max - 10MB)) {
+            # already at max (allow 10 MB of slop for MBR alignment)
+            $Ansible.Result = @{ changed = $false; size_gb = $currentGb; note = "already at max" }
+          } else {
+            Resize-Partition -DriveLetter C -Size $max
+            $new = (Get-Partition -DriveLetter C).Size
+            $Ansible.Result = @{
+              changed = $true
+              was_gb = $currentGb
+              now_gb = [math]::Round($new / 1GB, 2)
+              grew_by_gb = [math]::Round(($new - $part.Size) / 1GB, 2)
+            }
+          }
+      register: r
+      # Report changed only when we actually resized.
+      changed_when: r.result.changed | bool
+
+    - name: Show
+      ansible.builtin.debug:
+        var: r.result

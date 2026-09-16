@@ -1,0 +1,473 @@
+---
+# Phase 60 — install the next available SCCM console update on slab-pss.
+#
+# One-shot: installs ONE update (the newest that's currently installable),
+# then exits. Each update pack declares its own MinCMVersion — as of the
+# 2026-09-10 dry run, 2509 is directly applicable to a 2403 site, so no
+# chain-walking is needed; re-run this play when a newer pack appears.
+# If a specific pack is ever needed, use slab_upgrade_specific_name.
+#
+# Not part of site.yml — this is invoked on demand:
+#   ./run.sh 60_upgrade_sccm.yml
+#
+# Modes (via extra-vars):
+#   ./run.sh 60_upgrade_sccm.yml -e slab_upgrade_dry_run=true
+#     → trigger check, list what's available, do nothing else.
+#   ./run.sh 60_upgrade_sccm.yml -e 'slab_upgrade_specific_name="Configuration Manager 2509"'
+#     → install this exact update instead of "newest available".
+#
+# Timing (first run on a fresh site is the slow one):
+#   - Metadata download from Microsoft to appear in Get-CMSiteUpdate:
+#     up to several hours after the very first Invoke-CMSiteUpdateCheck.
+#     Subsequent checks are fast (minutes) because dmpdownloader keeps
+#     the local catalog warm.
+#   - The update pack download (site server fetches from Microsoft)
+#     adds 30-60 min before the in-place install itself starts.
+#   - The in-place install runs 30-90 min depending on size.
+#
+# Prerequisites:
+#   - slab-pss has internet egress on 443 to *.microsoft.com (dmpdownloader
+#     contacts Microsoft's cloud service directly).
+#   - Standalone primary is fully up (phases 00-70 complete, SMS_EXECUTIVE
+#     running).
+#   - Windows Firewall off (windows_base handled this).
+#
+# References:
+#   - Get-CMSiteUpdate / Invoke-CMSiteUpdateCheck / Install-CMSiteUpdate
+#     https://learn.microsoft.com/en-us/powershell/module/configurationmanager/
+#   - Console update log:
+#     C:\Program Files\Microsoft Configuration Manager\Logs\CMUpdate.log
+#   - Metadata download log:
+#     C:\Program Files\Microsoft Configuration Manager\Logs\dmpdownloader.log
+
+- name: In-place SCCM upgrade on slab-pss
+  hosts: slab-pss
+  gather_facts: false
+  vars:
+    slab_upgrade_max_wait_minutes: 240        # how long to wait for the update to appear
+    slab_upgrade_install_timeout_minutes: 180 # how long to wait for install to complete
+    slab_upgrade_dry_run: false               # true = list only, do nothing
+    slab_upgrade_specific_name: ""            # empty = "newest available"
+    slab_upgrade_poll_seconds: 300            # 5 min between polls
+    # SMS_CM_UpdatePackages.State codes considered installable.
+    # Verified empirically during the 2403 → 2509 upgrade on 2026-09-10:
+    #   262146 = the newest applicable update (install candidate)
+    #   327682 = older applicable updates still in the list (walking-
+    #            the-chain material for slab_upgrade_specific_name)
+    # NOT installable — these should stay OUT of this list:
+    #   196607 = PrereqFailed (SCCM WILL reject Install-CMSiteUpdate on
+    #            these — investigate the actual prereq failure first;
+    #            most common: C: has < 15 GB free on the site server)
+    #   196609 = Installing (mid-install) or Installed (current baseline)
+    # Override the default list only if a new code appears (e.g. a
+    # future Configuration Manager release introduces one):
+    #   ./run.sh 60_upgrade_sccm.yml \
+    #     -e '{"slab_upgrade_installable_states": [262146, 327682, <new>]}'
+    # (JSON -e form — bare -e k=v with commas gets mangled by the CLI.)
+    slab_upgrade_installable_states: [262146, 327682]
+
+  tasks:
+    - name: Sanity — SMS_EXECUTIVE is running
+      ansible.windows.win_service:
+        name: SMS_EXECUTIVE
+      register: sms
+      failed_when: sms.state != 'running'
+
+    - name: Trigger update-metadata check
+      ansible.windows.win_powershell:
+        script: |
+          $env:SMS_ADMIN_UI_PATH = "C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole\bin"
+          Import-Module "$env:SMS_ADMIN_UI_PATH\ConfigurationManager.psd1" -ErrorAction Stop
+          # win_powershell runs in a fresh session — the CM PSDrive is
+          # not auto-registered by importing the module. Every cmdlet
+          # here requires the CM drive to be the current location, or
+          # it errors "cannot be run from the current drive".
+          if (-not (Get-PSDrive -Name "{{ ludus_sccm_sitecode }}" -PSProvider CMSite -ErrorAction SilentlyContinue)) {
+            $mp = (Get-ItemProperty 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\ConfigMgr10\AdminUI\Connection' -Name Server).Server
+            New-PSDrive -Name "{{ ludus_sccm_sitecode }}" -PSProvider CMSite -Root $mp -Scope Script | Out-Null
+          }
+          Set-Location "{{ ludus_sccm_sitecode }}:\"
+          Invoke-CMSiteUpdateCheck -Force
+          $Ansible.Result = @{ ok = $true }
+      vars: &elevated
+        # WinRM connection read timeout for these tasks — the module
+        # itself has no per-script timeout parameter. Cold first sync
+        # can take a long time while dmpdownloader fetches the update
+        # catalog from Microsoft's cloud service.
+        ansible_timeout: 1800
+        ansible_become: true
+        ansible_become_method: runas
+        ansible_become_user: '{{ ludus_domain_netbios_name }}\{{ defaults.ad_domain_admin }}'
+        ansible_become_password: '{{ defaults.ad_domain_admin_password }}'
+        ansible_become_flags: "logon_type=interactive logon_flags=with_profile"
+
+    # dry_run skips the (potentially hours-long) wait for metadata sync
+    # and just lists whatever Get-CMSiteUpdate currently returns.
+    - name: Wait for updates to appear (Get-CMSiteUpdate non-empty)
+      ansible.windows.win_powershell:
+        script: |
+          $env:SMS_ADMIN_UI_PATH = "C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole\bin"
+          Import-Module "$env:SMS_ADMIN_UI_PATH\ConfigurationManager.psd1" -ErrorAction Stop
+          # win_powershell runs in a fresh session — the CM PSDrive is
+          # not auto-registered by importing the module. Every cmdlet
+          # here requires the CM drive to be the current location, or
+          # it errors "cannot be run from the current drive".
+          if (-not (Get-PSDrive -Name "{{ ludus_sccm_sitecode }}" -PSProvider CMSite -ErrorAction SilentlyContinue)) {
+            $mp = (Get-ItemProperty 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\ConfigMgr10\AdminUI\Connection' -Name Server).Server
+            New-PSDrive -Name "{{ ludus_sccm_sitecode }}" -PSProvider CMSite -Root $mp -Scope Script | Out-Null
+          }
+          Set-Location "{{ ludus_sccm_sitecode }}:\"
+          $u = @(Get-CMSiteUpdate)
+          $Ansible.Result = @{
+            count = $u.Count
+            names = @($u | ForEach-Object { $_.Name })
+          }
+      vars: *elevated
+      register: wait_result
+      until: wait_result.result.count > 0
+      retries: "{{ (slab_upgrade_max_wait_minutes * 60 / slab_upgrade_poll_seconds) | int }}"
+      delay: "{{ slab_upgrade_poll_seconds }}"
+      when: not slab_upgrade_dry_run | bool
+
+    - name: List all currently-visible updates (verbose)
+      ansible.windows.win_powershell:
+        script: |
+          $env:SMS_ADMIN_UI_PATH = "C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole\bin"
+          Import-Module "$env:SMS_ADMIN_UI_PATH\ConfigurationManager.psd1" -ErrorAction Stop
+          # win_powershell runs in a fresh session — the CM PSDrive is
+          # not auto-registered by importing the module. Every cmdlet
+          # here requires the CM drive to be the current location, or
+          # it errors "cannot be run from the current drive".
+          if (-not (Get-PSDrive -Name "{{ ludus_sccm_sitecode }}" -PSProvider CMSite -ErrorAction SilentlyContinue)) {
+            $mp = (Get-ItemProperty 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\ConfigMgr10\AdminUI\Connection' -Name Server).Server
+            New-PSDrive -Name "{{ ludus_sccm_sitecode }}" -PSProvider CMSite -Root $mp -Scope Script | Out-Null
+          }
+          Set-Location "{{ ludus_sccm_sitecode }}:\"
+          # State is a numeric flag on SMS_CM_UpdatePackages; StateName
+          # comes back null on this baseline. Labels below verified
+          # against the live slab site during the 2403 → 2509 upgrade
+          # (2026-09-10) and by re-listing shortly afterward:
+          #    65538 → Downloading (during pack fetch from Microsoft)
+          #   131075 → Downloaded (staged, awaiting install)
+          #   196607 → PrereqFailed (WMI: PrereqFlag=2, WarningFlag=1)
+          #   196609 → Installing (mid-install only)
+          #   196612 → Installed (settled current-baseline pack; observed
+          #            on 2509 after post-upgrade console fix + reprobe)
+          #   262146 → NewestApplicable (install candidate, pre-install)
+          #   327682 → OlderApplicable (in list, walking-the-chain
+          #            material; also 2509-era hotfix rollups)
+          # Community-referenced but not directly observed here:
+          #   262147 → Failed?
+          #   262149 → InstalledWithWarning?
+          $stateLabel = @{
+             65538  = "Downloading"
+            131075  = "Downloaded"
+            196607  = "PrereqFailed"
+            196609  = "Installing"
+            196612  = "Installed"
+            262146  = "NewestApplicable"
+            262147  = "Failed?"
+            262149  = "InstalledWithWarning?"
+            327682  = "OlderApplicable"
+          }
+          $Ansible.Result = @{
+            updates = @(Get-CMSiteUpdate | ForEach-Object {
+              [ordered]@{
+                Name          = $_.Name
+                State         = $_.State
+                StateLabel    = if ($stateLabel.ContainsKey([int]$_.State)) { $stateLabel[[int]$_.State] } else { "Unknown($($_.State))" }
+                FullVersion   = $_.FullVersion
+                ClientVersion = $_.ClientVersion
+                DateReleased  = $_.DateReleased
+                PackageGuid   = $_.PackageGuid
+              }
+            })
+          }
+      vars: *elevated
+      register: available
+
+    - name: Show updates
+      ansible.builtin.debug:
+        var: available.result.updates
+
+    # All filtering is on the numeric State code — StateName comes back
+    # null on this baseline, so it is never a reliable filter input.
+    # The "List all currently-visible updates" task prints StateLabel
+    # alongside each State; compare that output to
+    # slab_upgrade_installable_states before a real install.
+    - name: DRY RUN — stop after listing
+      ansible.builtin.meta: end_play
+      when: slab_upgrade_dry_run | bool
+
+    # Normalise the installable-states var to a list. Extra-vars may
+    # arrive as a real list (JSON -e or @file) or as a string (bare
+    # -e k=v); a bare -e k=v with commas is truncated by the CLI, so
+    # the JSON form is the documented one. The expression result must
+    # be a list — scalar set_fact results get re-stringified by the
+    # templar and would break the numeric 'in' comparison below.
+    - name: Coerce slab_upgrade_installable_states into a list
+      ansible.builtin.set_fact:
+        _installable_states: >-
+          {{
+            ([ (slab_upgrade_installable_states | from_yaml) ]
+              if (slab_upgrade_installable_states | from_yaml) is not sequence
+              else (slab_upgrade_installable_states | from_yaml | list))
+            if slab_upgrade_installable_states is string
+            else (slab_upgrade_installable_states | list)
+          }}
+
+    - name: Filter to installable updates
+      ansible.builtin.set_fact:
+        _installable: >-
+          {{ available.result.updates
+             | selectattr('State', 'in', _installable_states)
+             | list }}
+
+    - name: Fail if nothing installable
+      ansible.builtin.fail:
+        msg: |
+          Get-CMSiteUpdate returned {{ available.result.updates | length }}
+          update(s), but none in an installable state
+          ({{ slab_upgrade_installable_states }}). Current states:
+          {{ available.result.updates | map(attribute='StateLabel') | list }}
+          If updates are still 'Available', 'Downloading' or 'Downloaded',
+          wait longer and re-run this play — SCCM downloads the pack
+          before it becomes installable.
+      when: _installable | length == 0
+
+    - name: Fail if requested update is not in the installable set
+      ansible.builtin.fail:
+        msg: >-
+          slab_upgrade_specific_name={{ slab_upgrade_specific_name }} is not
+          in the installable set:
+          {{ _installable | map(attribute='Name') | list }}
+      when:
+        - slab_upgrade_specific_name | length > 0
+        - slab_upgrade_specific_name not in (_installable | map(attribute='Name') | list)
+
+    - name: Pick target update
+      ansible.builtin.set_fact:
+        _target: >-
+          {{
+            (
+              _installable
+              | selectattr('Name', 'equalto', slab_upgrade_specific_name)
+              | list
+              | first
+            )
+            if slab_upgrade_specific_name | length > 0
+            else (_installable | sort(attribute='DateReleased') | last)
+          }}
+
+    - name: Show target update
+      ansible.builtin.debug:
+        msg: "Target update: {{ _target.Name }} (FullVersion={{ _target.FullVersion }}, released {{ _target.DateReleased }}, State={{ _target.StateLabel }})"
+
+    - name: Capture pre-install site version
+      ansible.windows.win_powershell:
+        script: |
+          $env:SMS_ADMIN_UI_PATH = "C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole\bin"
+          Import-Module "$env:SMS_ADMIN_UI_PATH\ConfigurationManager.psd1" -ErrorAction Stop
+          # win_powershell runs in a fresh session — the CM PSDrive is
+          # not auto-registered by importing the module. Every cmdlet
+          # here requires the CM drive to be the current location, or
+          # it errors "cannot be run from the current drive".
+          if (-not (Get-PSDrive -Name "{{ ludus_sccm_sitecode }}" -PSProvider CMSite -ErrorAction SilentlyContinue)) {
+            $mp = (Get-ItemProperty 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\ConfigMgr10\AdminUI\Connection' -Name Server).Server
+            New-PSDrive -Name "{{ ludus_sccm_sitecode }}" -PSProvider CMSite -Root $mp -Scope Script | Out-Null
+          }
+          Set-Location "{{ ludus_sccm_sitecode }}:\"
+          $site = Get-CMSite -SiteCode "{{ ludus_sccm_sitecode }}"
+          $Ansible.Result = @{ version = $site.Version }
+      vars: *elevated
+      register: pre_version
+
+    - name: Install target update
+      ansible.windows.win_powershell:
+        script: |
+          $env:SMS_ADMIN_UI_PATH = "C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole\bin"
+          Import-Module "$env:SMS_ADMIN_UI_PATH\ConfigurationManager.psd1" -ErrorAction Stop
+          # win_powershell runs in a fresh session — the CM PSDrive is
+          # not auto-registered by importing the module. Every cmdlet
+          # here requires the CM drive to be the current location, or
+          # it errors "cannot be run from the current drive".
+          if (-not (Get-PSDrive -Name "{{ ludus_sccm_sitecode }}" -PSProvider CMSite -ErrorAction SilentlyContinue)) {
+            $mp = (Get-ItemProperty 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\ConfigMgr10\AdminUI\Connection' -Name Server).Server
+            New-PSDrive -Name "{{ ludus_sccm_sitecode }}" -PSProvider CMSite -Root $mp -Scope Script | Out-Null
+          }
+          Set-Location "{{ ludus_sccm_sitecode }}:\"
+          # -IgnorePrereqWarning: without it, some baselines (observed on
+          # 2603) refuse to install while the site has outstanding prereq
+          # WARNINGS (SQL Native Client version, SQL memory, NAA account
+          # alert etc). CMUpdate.log loops on
+          #   "There is site server reporting WARNING in prereq check.
+          #    Setup will not continue."
+          # every 10 min forever until the install is re-issued with the
+          # switch. Warnings are informational for a lab; the fix is to
+          # bypass them, not chase every one. Override with -e
+          # slab_upgrade_ignore_prereq_warning=false if you want them
+          # enforced (rare, and a re-run without the flag will just
+          # loop on the warning).
+          $ignoreWarn = [bool]::Parse("{{ slab_upgrade_ignore_prereq_warning | default(true) | string | lower }}")
+          try {
+            Install-CMSiteUpdate -Name "{{ _target.Name }}" -Force -SkipPrerequisiteCheck:$false -IgnorePrereqWarning:$ignoreWarn -ErrorAction Stop
+            $Ansible.Result = @{ started = "{{ _target.Name }}"; ignore_prereq_warning = $ignoreWarn }
+          } catch {
+            throw "Install-CMSiteUpdate rejected '{{ _target.Name }}': $($_.Exception.Message)"
+          }
+        # Returns after triggering the background update engine; the
+        # polling task below tracks actual install progress.
+      vars: *elevated
+
+    # Completion is detected by the site version reaching the target
+    # FullVersion, not by the (unverified) in-flight state codes. The
+    # update object's State is still reported each poll so the live
+    # codes get logged in the playbook output.
+    #
+    # Mid-install the in-place engine restarts the site, so the SMS
+    # provider can be briefly unavailable — a provider error is NOT a
+    # failure, it just means "keep polling".
+    - name: Poll until site version matches target
+      ansible.windows.win_powershell:
+        script: |
+          $env:SMS_ADMIN_UI_PATH = "C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole\bin"
+          Import-Module "$env:SMS_ADMIN_UI_PATH\ConfigurationManager.psd1" -ErrorAction Stop
+          # win_powershell runs in a fresh session — the CM PSDrive is
+          # not auto-registered by importing the module. Every cmdlet
+          # here requires the CM drive to be the current location, or
+          # it errors "cannot be run from the current drive".
+          if (-not (Get-PSDrive -Name "{{ ludus_sccm_sitecode }}" -PSProvider CMSite -ErrorAction SilentlyContinue)) {
+            $mp = (Get-ItemProperty 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\ConfigMgr10\AdminUI\Connection' -Name Server).Server
+            New-PSDrive -Name "{{ ludus_sccm_sitecode }}" -PSProvider CMSite -Root $mp -Scope Script | Out-Null
+          }
+          Set-Location "{{ ludus_sccm_sitecode }}:\"
+          try {
+            $sv = (Get-CMSite -SiteCode "{{ ludus_sccm_sitecode }}").Version
+          } catch {
+            $sv = "provider-busy"
+          }
+          $u = $null
+          try { $u = Get-CMSiteUpdate -Name "{{ _target.Name }}" } catch { }
+          $Ansible.Result = @{
+            siteVersion = $sv
+            updateState = if ($u) { [int]$u.State } else { -1 }
+          }
+      vars: *elevated
+      register: install_poll
+      # The install restarts WinRM mid-run in TWO ways this loop must
+      # survive: (a) "unreachable" (transport can't establish, host
+      # sleeping) — caught by ignore_unreachable; (b) HTTP 400 / other
+      # WinRMTransportError while the SMS provider is coming back —
+      # NOT caught by ignore_unreachable, so we also failed_when:false
+      # and rely on the until: to keep the retry loop alive on any
+      # error. Terminal signal is the site version flipping to the
+      # target; the assert below catches the "timed out" case.
+      ignore_unreachable: true
+      failed_when: false
+      until: (install_poll.result | default({})).siteVersion | default('none') == _target.FullVersion
+      retries: "{{ (slab_upgrade_install_timeout_minutes * 60 / slab_upgrade_poll_seconds) | int }}"
+      delay: "{{ slab_upgrade_poll_seconds }}"
+
+    - name: Assert site is on the target version
+      ansible.builtin.assert:
+        that: (install_poll.result | default({})).siteVersion | default('none') == _target.FullVersion
+        fail_msg: |
+          Site still at {{ (install_poll.result | default({})).siteVersion | default('unknown') }}
+          after {{ slab_upgrade_install_timeout_minutes }} minutes (last update
+          state {{ (install_poll.result | default({})).updateState | default('unknown') }}). Check
+          C:\Program Files\Microsoft Configuration Manager\Logs\CMUpdate.log
+          and hman.log on slab-pss for details.
+
+    - name: Restart SMS_Executive to pick up any component updates
+      ansible.windows.win_service:
+        name: SMS_EXECUTIVE
+        state: restarted
+        force_dependent_services: true
+
+    - name: Confirm SMS_EXECUTIVE running post-restart
+      ansible.windows.win_service:
+        name: SMS_EXECUTIVE
+      register: sms_after
+      failed_when: sms_after.state != 'running'
+
+    # After an in-place site upgrade the SITE moves to the new version
+    # but the AdminConsole on the site server stays on the old version.
+    # Launching the console interactively prompts to auto-upgrade;
+    # automation via New-PSDrive gets `SiteVersionMismatch` with no
+    # prompt to click. Fix: run ConsoleSetup.exe /q from the on-disk
+    # setup source that Install-CMSiteUpdate populated. Fast (~30s),
+    # no-op-friendly when versions already align.
+    #
+    # Path: site-upgrade drops the fresh console setup at
+    #   C:\Program Files\Microsoft Configuration Manager\tools\ConsoleSetup\ConsoleSetup.exe
+    # (empirically verified on slab-pss after the 2403→2509 upgrade on
+    # 2026-09-10; the fix agent used this exact path.)
+    - name: Upgrade AdminConsole to match new site version
+      ansible.windows.win_powershell:
+        script: |
+          $consoleExe   = "C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole\bin\Microsoft.ConfigurationManagement.exe"
+          $consoleSetup = "C:\Program Files\Microsoft Configuration Manager\tools\ConsoleSetup\ConsoleSetup.exe"
+          $before = if (Test-Path $consoleExe) { (Get-Item $consoleExe).VersionInfo.FileVersion } else { "not present" }
+          if (-not (Test-Path $consoleSetup)) {
+            throw "ConsoleSetup.exe not found at $consoleSetup — the site upgrade should have staged it. Check hman.log."
+          }
+          $proc = Start-Process -FilePath $consoleSetup -ArgumentList "/q" -Wait -NoNewWindow -PassThru
+          $after = if (Test-Path $consoleExe) { (Get-Item $consoleExe).VersionInfo.FileVersion } else { "gone(?)" }
+          $Ansible.Result = @{
+            before = $before
+            after = $after
+            exit_code = $proc.ExitCode
+            changed_version = ($before -ne $after)
+          }
+      vars: *elevated
+      register: console_upgrade
+
+    - name: Show console upgrade result
+      ansible.builtin.debug:
+        var: console_upgrade.result
+
+    - name: Assert New-PSDrive works after console upgrade
+      ansible.windows.win_powershell:
+        script: |
+          $env:SMS_ADMIN_UI_PATH = "C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole\bin"
+          Import-Module "$env:SMS_ADMIN_UI_PATH\ConfigurationManager.psd1" -ErrorAction Stop
+          $mp = (Get-ItemProperty 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\ConfigMgr10\AdminUI\Connection' -Name Server).Server
+          if (Get-PSDrive -Name "{{ ludus_sccm_sitecode }}" -PSProvider CMSite -ErrorAction SilentlyContinue) {
+            Remove-PSDrive -Name "{{ ludus_sccm_sitecode }}" -Force
+          }
+          New-PSDrive -Name "{{ ludus_sccm_sitecode }}" -PSProvider CMSite -Root $mp -Scope Script -ErrorAction Stop | Out-Null
+          $Ansible.Result = @{ ok = $true }
+      vars: *elevated
+      # Retry once with a short delay — the console upgrade can leave
+      # provider connections briefly settling.
+      register: psdrive_check
+      until: psdrive_check.result.ok | default(false)
+      retries: 3
+      delay: 15
+
+    - name: Report new site version
+      ansible.windows.win_powershell:
+        script: |
+          $env:SMS_ADMIN_UI_PATH = "C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole\bin"
+          Import-Module "$env:SMS_ADMIN_UI_PATH\ConfigurationManager.psd1" -ErrorAction Stop
+          # win_powershell runs in a fresh session — the CM PSDrive is
+          # not auto-registered by importing the module. Every cmdlet
+          # here requires the CM drive to be the current location, or
+          # it errors "cannot be run from the current drive".
+          if (-not (Get-PSDrive -Name "{{ ludus_sccm_sitecode }}" -PSProvider CMSite -ErrorAction SilentlyContinue)) {
+            $mp = (Get-ItemProperty 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\ConfigMgr10\AdminUI\Connection' -Name Server).Server
+            New-PSDrive -Name "{{ ludus_sccm_sitecode }}" -PSProvider CMSite -Root $mp -Scope Script | Out-Null
+          }
+          Set-Location "{{ ludus_sccm_sitecode }}:\"
+          $site = Get-CMSite -SiteCode "{{ ludus_sccm_sitecode }}"
+          $Ansible.Result = @{
+            SiteCode    = $site.SiteCode
+            Version     = $site.Version
+            BuildNumber = $site.BuildNumber
+          }
+      vars: *elevated
+      register: version_after
+
+    - name: Show new site version
+      ansible.builtin.debug:
+        msg: "Site now at {{ version_after.result.Version }} (build {{ version_after.result.BuildNumber }}), was {{ pre_version.result.version }}"

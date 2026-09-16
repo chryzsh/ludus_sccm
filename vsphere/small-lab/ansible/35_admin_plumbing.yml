@@ -1,0 +1,18 @@
+---
+# Phase 35 — add slab-pss$ (site server computer account) to local
+# Administrators on slab-db.
+#
+# add_pss_to_admins uses ludus_sccm_site_server_hostname host_var
+# (set in host_vars/slab-db/main.yml to 'slab-pss') to know which
+# computer account to add. Requires AD reachable (uses
+# microsoft.ad.object_info with delegate_to: {{ ludus_dc_vm_name }},
+# which is 'slab-dc' per group_vars).
+#
+# Prerequisite for phase 40 — install_site_database uses the site
+# server's local-admin access to grant SQL sysadmin.
+
+- name: add_pss_to_admins on slab-db
+  hosts: slab-db
+  gather_facts: false
+  roles:
+    - role: mayyhem.ludus_sccm.add_pss_to_admins

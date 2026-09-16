@@ -1,0 +1,30 @@
+---
+# Phase 30 — prep slab-pss for SCCM install.
+#
+# Runs prep_siteserver on slab-pss ONLY. Unlike the mayyhem lab (where
+# MP, DP, SMS provider live on separate hosts and each needs its own
+# prep_* role), slab colocates all site-system roles on slab-pss — so
+# prep_siteserver handles everything.
+#
+# prep_siteserver does (large role):
+#   - Installs Windows features (BITS, IIS chain, RSAT, GPMC, RDC,
+#     .NET, Web-* everything the site server needs).
+#   - Downloads ADK + WinPE ADK add-on (URLs in role defaults; see
+#     group_vars/all/main.yml for the "latest SCCM" phase-5 overrides).
+#   - Downloads and extracts the SCCM baseline (MCM_Configmgr_<ver>.exe)
+#     to C:\ludus\sccm\cd.retail.LN.
+#   - Templates ConfigMgrSetup.ini from
+#     StandaloneSiteConfigMgrSetup.ini.j2 (the default when
+#     ludus_sccm_win_sccm_config_default_template isn't overridden).
+#   - Templates SystemManagement.ps1.
+#   - Pins ODBC Driver 18 to 18.5.2 (works around a setup regression
+#     in 18.6.1+).
+#
+# Large downloads are cached on the controller under
+# {{ ludus_install_directory }} (/tmp/slab-sccm-cache per group_vars).
+
+- name: prep_siteserver on slab-pss
+  hosts: slab-pss
+  gather_facts: false
+  roles:
+    - role: mayyhem.ludus_sccm.prep_siteserver

@@ -1,0 +1,52 @@
+# Example tfvars for the SMALL SCCM lab (slab). Placeholders only.
+#
+# Copy this file to a real tfvars OUTSIDE this repo (e.g.
+# ~/.mayyhem-sccm/slab.tfvars) and fill in real values. Never commit a
+# real tfvars — see AGENTS.md.
+#
+# Note: the vSphere connection block will typically match the values you
+# already have in ~/.mayyhem-sccm/vsphere.tfvars for the mayyhem lab. The
+# critical differences are `vsphere_folder`, `lab_prefix`, `domain_fqdn`,
+# and `vm_ips` — all three MUST be distinct from mayyhem's values.
+#
+# Apply with:
+#   terraform apply -var-file=~/.mayyhem-sccm/slab.tfvars
+
+### vCenter connection ###
+vsphere_server   = "vcenter.example"
+vsphere_user     = "administrator@vsphere.local"
+vsphere_password = "change_me"
+vsphere_insecure = true
+
+### vSphere objects ###
+vsphere_datacenter    = "Datacenter"
+vsphere_resource_pool = "Resources"
+vsphere_datastore     = "datastore1"
+vsphere_network       = "VM Network"
+# DISTINCT FROM MAYYHEM'S FOLDER. Create this folder in vCenter first;
+# this module will not create it.
+vsphere_folder = "Personal/username/slab-sccm-latest"
+
+### Templates ###
+# Reusing the same Server 2022 template mayyhem uses is fine and expected.
+vsphere_server_template = "windows-server-2022-template"
+
+### Guest customization / network ###
+ipv4_netmask = 22
+ipv4_gateway = "192.0.2.1"
+# Bootstrap DNS with the network default; flip to the slab DC's IP after
+# the AD forest is up (before 15_domain_join.yml runs).
+dns_server  = "192.0.2.53"
+domain_fqdn = "slab.lab"
+
+### Lab identity ###
+# MUST BE DISTINCT FROM MAYYHEM'S lab_prefix.
+lab_prefix           = "slab"
+local_admin_password = "change_me_too"
+
+### Per-VM IPs — every key required ###
+vm_ips = {
+  "dc"  = "192.0.2.117"
+  "pss" = "192.0.2.118"
+  "db"  = "192.0.2.119"
+}

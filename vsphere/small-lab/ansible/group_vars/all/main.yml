@@ -1,0 +1,58 @@
+---
+# Non-sensitive defaults for the slab (small always-on) lab.
+#
+# Sensitive values (ansible_password, defaults.ad_domain_admin_password)
+# live in group_vars/all/local.yml (gitignored, mode 0600). See README.
+
+# Domain identity — distinct from mayyhem.com.
+ludus_domain_fqdn: slab.lab
+ludus_domain_netbios_name: SLAB
+
+# Collection helper: FQDN with the first label stripped.
+# For slab.lab → "lab".
+ludus_domain_fqdn_tail: "{{ ludus_domain_fqdn.split('.', 1)[1] | default('') }}"
+
+# The DC's inventory hostname. Roles that need AD delegate to
+# {{ ludus_dc_vm_name }}, so this must match the inventory host key.
+# Inventory keys are the full VM names (see sync_inventory.py).
+ludus_dc_vm_name: slab-dc
+
+# Controller-side download cache. Same shape as mayyhem's, but under a
+# slab-specific path so the two labs don't fight over the SCCM baseline
+# extract if they differ.
+ludus_install_directory: /tmp/slab-sccm-cache
+
+# ============================================================
+# "Latest SCCM" plumbing — see docs/small-latest-lab-plan.md
+# ============================================================
+#
+# We intentionally do NOT override configmgr_url / adksetup_url /
+# adkwinpesetup_url here — the collection's prep_siteserver defaults
+# (currently the 2403 baseline + matching ADK) are the well-tested path.
+#
+# Rationale (from an aborted 2509 attempt on 2026-09-09):
+#   Microsoft frames 2509 as an in-console update pack applied on top
+#   of 2403+, NOT as a fresh baseline. The eval-center download for
+#   ConfigMgr_2509.exe exists, but:
+#     (a) The self-extractor no longer accepts the `/s -dPATH` silent
+#         syntax that worked for 2303/2403; the process hangs
+#         indefinitely with zero CPU when driven that way over WinRM.
+#     (b) Microsoft does not publicly document silent-extract flags
+#         for the SCCM baseline self-extractor at all — the older `/s`
+#         convention was a Wise/InstallShield-SFX behavior.
+#     (c) The extract folder name is likely no longer `cd.retail.LN`
+#         (community references suggest `cd.retail`), which would break
+#         every hardcoded path in the collection.
+#
+# The intended path to "latest" is therefore:
+#   1. Install baseline 2403 (this phase 30 → 50).
+#   2. From the SCCM console: Administration → Updates and Servicing
+#      → install the 2509 update pack, then (optionally) 2603 when it
+#      appears.
+# This matches the operator's chosen "install-latest at build; manual
+# in-place upgrades later" answer at plan time.
+#
+# If a future SCCM baseline is again published with a working
+# unattended-extract path, override the three URLs here (and update
+# `ludus_sccm_file_name` in prep_siteserver/tasks/main.yml or lift it
+# to a variable if the filename differs).

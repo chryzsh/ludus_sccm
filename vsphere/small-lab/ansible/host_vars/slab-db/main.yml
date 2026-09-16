@@ -1,0 +1,9 @@
+---
+# slab-db: dedicated SQL Server 2022 for the SLB site database.
+
+ludus_sccm_site_server_hostname: 'slab-pss'
+ludus_sccm_sql_server_hostname: 'slab-db'
+
+# Domainadmin gets SQL sysadmin so the operator can query the CM
+# database directly during research work.
+ludus_sccm_sql_additional_sysadmin_accounts: 'SLAB\domainadmin'

@@ -1,0 +1,90 @@
+---
+# Phase 70 — post-install health checks.
+#
+# Not exhaustive — catches the common failure modes:
+#   - SQL Server engine running on slab-db.
+#   - CM_SLB database exists on slab-db.
+#   - SMS Provider WMI reachable on slab-pss and reports site SLB.
+#   - Per-site boundary group exists (verifies the collection's
+#     upstream-fix boundary-naming change took effect).
+
+- name: SQL health
+  hosts: slab-db
+  gather_facts: false
+  tasks:
+    - name: Check MSSQLSERVER service
+      ansible.windows.win_service:
+        name: MSSQLSERVER
+      register: sql_svc
+
+    - name: Assert SQL running
+      ansible.builtin.assert:
+        that: sql_svc.state == "running"
+        fail_msg: "MSSQLSERVER is {{ sql_svc.state }} on {{ inventory_hostname }}"
+
+    - name: Query CM database exists
+      ansible.windows.win_powershell:
+        script: |
+          $out = & sqlcmd -E -h -1 -Q "SET NOCOUNT ON; SELECT name FROM sys.databases WHERE name = 'CM_SLB'" 2>$null
+          $Ansible.Result = @{ found = ($out -match 'CM_SLB') }
+      vars:
+        ansible_become: true
+        ansible_become_method: runas
+        ansible_become_user: '{{ ludus_domain_netbios_name }}\{{ defaults.ad_domain_admin }}'
+        ansible_become_password: '{{ defaults.ad_domain_admin_password }}'
+        ansible_become_flags: "logon_type=interactive logon_flags=with_profile"
+      register: cm_db
+
+    - name: Assert CM_SLB present
+      ansible.builtin.assert:
+        that: cm_db.result.found
+        fail_msg: "CM_SLB not found on {{ inventory_hostname }}"
+
+- name: SCCM site server health
+  hosts: slab-pss
+  gather_facts: false
+  tasks:
+    - name: Query site state via SMS provider WMI
+      ansible.windows.win_powershell:
+        script: |
+          $sites = Get-CimInstance -Namespace 'root\SMS' -ClassName SMS_ProviderLocation -ErrorAction SilentlyContinue
+          $Ansible.Result = @{ count = @($sites).Count; sites = @($sites | ForEach-Object { $_.SiteCode }) }
+      register: sms
+
+    - name: Show site state
+      ansible.builtin.debug:
+        var: sms.result
+
+    - name: Assert SLB site present via provider
+      ansible.builtin.assert:
+        that:
+          - sms.result.count >= 1
+          - "'SLB' in sms.result.sites"
+        fail_msg: "SLB not reported by SMS provider on {{ inventory_hostname }} (got: {{ sms.result.sites }})"
+
+    - name: Query per-site boundary group
+      ansible.windows.win_powershell:
+        script: |
+          Import-Module "C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole\bin\ConfigurationManager.psd1" -ErrorAction SilentlyContinue
+          if (-not (Get-PSDrive -Name SLB -PSProvider CMSite -ErrorAction SilentlyContinue)) {
+            $mp = (Get-ItemProperty 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\ConfigMgr10\AdminUI\Connection' -Name Server).Server
+            New-PSDrive -Name SLB -PSProvider CMSite -Root $mp | Out-Null
+          }
+          Set-Location "SLB:\"
+          $expected = "Discovery Default Boundary Group - SLB"
+          $bg = Get-CMBoundaryGroup -Name $expected
+          $Ansible.Result = @{ expected_name = $expected; found = ($bg -ne $null); default_site = if ($bg) { $bg.DefaultSiteCode } else { $null } }
+      vars:
+        ansible_become: true
+        ansible_become_method: runas
+        ansible_become_user: '{{ ludus_domain_netbios_name }}\{{ defaults.ad_domain_admin }}'
+        ansible_become_password: '{{ defaults.ad_domain_admin_password }}'
+        ansible_become_flags: "logon_type=interactive logon_flags=with_profile"
+      register: bg
+
+    - name: Assert per-site boundary group with DefaultSiteCode=SLB
+      ansible.builtin.assert:
+        that:
+          - bg.result.found
+          - bg.result.default_site == "SLB"
+        fail_msg: "boundary group '{{ bg.result.expected_name }}' missing or has wrong DefaultSiteCode ({{ bg.result.default_site }})"

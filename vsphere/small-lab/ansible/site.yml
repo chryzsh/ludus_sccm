@@ -1,0 +1,21 @@
+---
+# Ordered bring-up of the slab (small always-on) SCCM lab.
+#
+# 8 numbered phases, each individually runnable via ./run.sh NN_phase.yml.
+# Skip a phase by commenting its import_playbook line.
+#
+# Unlike the mayyhem lab, slab has no hierarchy — no CAS extension,
+# no passive site server, no secondary site. Standalone primary only.
+
+- import_playbook: 00_connectivity.yml       # win_ping every host
+- import_playbook: 05_ad_forest.yml          # promote slab-dc + create domainadmin
+- import_playbook: 10_windows_base.yml       # windows_base on all hosts
+- import_playbook: 11_grow_partitions.yml    # extend C: to full VMDK size (template ships ~60GB)
+- import_playbook: 15_domain_join.yml        # join slab-pss, slab-db to slab.lab
+- import_playbook: 20_install_adcs.yml       # ADCS on slab-dc
+- import_playbook: 30_prep_site_systems.yml  # prep_siteserver on slab-pss
+- import_playbook: 35_admin_plumbing.yml     # add_pss_to_admins on slab-db
+- import_playbook: 40_install_database.yml   # SQL 2022 on slab-db
+- import_playbook: 50_install_primary.yml    # SCCM standalone primary on slab-pss
+- import_playbook: 55_install_scp.yml        # SCP role (StandaloneSiteConfigMgrSetup.ini sets CloudConnector=0)
+- import_playbook: 70_verify.yml             # SQL up, CM_SLB present, SMS provider WMI

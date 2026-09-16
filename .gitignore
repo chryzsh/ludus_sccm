@@ -26,6 +26,29 @@ vsphere/ansible/host_vars/*/*.local.yml
 vsphere/terraform/*.tfplan
 vsphere/terraform/.terraform.tfstate.lock.info
 
+# Small always-on lab (slab) — same rules as the mayyhem terraform above.
+vsphere/small-lab/terraform/*.tfvars
+vsphere/small-lab/terraform/*.tfvars.json
+vsphere/small-lab/terraform/.terraform/
+vsphere/small-lab/terraform/.terraform.lock.hcl
+vsphere/small-lab/terraform/terraform.tfstate*
+vsphere/small-lab/terraform/crash.log
+vsphere/small-lab/terraform/override.tf
+vsphere/small-lab/terraform/override.tf.json
+vsphere/small-lab/terraform/*_override.tf
+vsphere/small-lab/terraform/*_override.tf.json
+vsphere/small-lab/terraform/*.tfplan
+vsphere/small-lab/terraform/.terraform.tfstate.lock.info
+vsphere/small-lab/ansible/inventory.yml
+vsphere/small-lab/ansible/group_vars/*.local.yml
+vsphere/small-lab/ansible/group_vars/*/local.yml
+vsphere/small-lab/ansible/group_vars/*/*.local.yml
+vsphere/small-lab/ansible/host_vars/*.local.yml
+vsphere/small-lab/ansible/host_vars/*/local.yml
+vsphere/small-lab/ansible/host_vars/*/*.local.yml
+vsphere/small-lab/ansible/__pycache__/
+vsphere/small-lab/ansible/*.pyc
+
 # Local-only environment specifics (target vCenter, IPs, template names, etc.)
 ENVIRONMENT.local.md
 *.local.md

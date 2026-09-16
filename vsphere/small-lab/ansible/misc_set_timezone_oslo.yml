@@ -1,0 +1,53 @@
+---
+# Set all slab VMs to Oslo time.
+#
+# Why: the vSphere provider defaults Windows guest customization to
+# TimeZone=85 (GMT Standard Time, London). Every fresh VM lands one
+# hour behind Oslo in summer / on the wrong TZ ID in winter — subtle
+# enough to eat time when Kerberos or scheduled tasks act up.
+#
+# What: sets slab-dc, slab-pss, slab-db to `W. Europe Standard Time`
+# (Oslo / Berlin / Amsterdam / Stockholm), then forces a resync so
+# the wall clock jumps immediately. Idempotent.
+#
+# Permanent fix is `time_zone = 110` in vms.tf — committed alongside.
+#
+# Sibling of the mayyhem-side vsphere/ansible/misc_set_timezone_oslo.yml
+# (that one also handles the Ubuntu student tier which slab doesn't have).
+
+- name: Set slab Windows VMs to W. Europe Standard Time (Oslo)
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Get current timezone
+      ansible.windows.win_powershell:
+        script: |
+          $tz = Get-TimeZone
+          $Ansible.Result = @{ id = $tz.Id; display = $tz.DisplayName }
+      register: tz_before
+      changed_when: false
+
+    - name: Set timezone to W. Europe Standard Time
+      ansible.windows.win_powershell:
+        script: |
+          $target = "W. Europe Standard Time"
+          if ((Get-TimeZone).Id -ne $target) {
+            Set-TimeZone -Id $target
+            $Ansible.Result = @{ changed = $true; new = (Get-TimeZone).DisplayName }
+          } else {
+            $Ansible.Result = @{ changed = $false }
+          }
+      register: tz_set
+      changed_when: tz_set.result.changed | default(false) | bool
+
+    - name: Force w32tm resync so wall clock jumps immediately
+      ansible.windows.win_shell: |
+        w32tm /resync /force 2>&1
+        Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'
+      register: resync
+      when: tz_set.result.changed | default(false) | bool
+      changed_when: false
+
+    - name: Show new state
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }}: was {{ tz_before.result.display }} -> {{ (tz_set.result.new | default(tz_before.result.display)) }}"

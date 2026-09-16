@@ -1,0 +1,97 @@
+---
+# Phase 55 — install the Service Connection Point role on slab-pss.
+#
+# Why this exists: the collection's StandaloneSiteConfigMgrSetup.ini.j2
+# sets `CloudConnector=0`, which means SCCM setup does NOT install the
+# SCP role. Mayyhem's hierarchy picks up SCP via the CAS extension
+# (ExtendPrimaryToCAS.ini.j2 → CloudConnector=1 on cas-scp); slab is
+# standalone-only and has no CAS extension, so SCP is missed entirely.
+#
+# Without SCP:
+#   - The site cannot contact Microsoft's cloud service (CMUdatafeed).
+#   - `Invoke-CMSiteUpdateCheck` runs but no metadata ever arrives.
+#   - `Get-CMSiteUpdate` stays empty forever.
+#   - No in-console updates → 60_upgrade_sccm.yml is a no-op forever.
+#
+# This play installs SCP on the site server itself (colocated with MP,
+# DP, SMS provider) in Online mode — it will fetch update metadata from
+# Microsoft directly via HTTPS. Requires internet egress on 443 to
+# *.microsoft.com from slab-pss (verified via 00_connectivity.yml +
+# a Test-NetConnection probe).
+#
+# Idempotent: Add-CMServiceConnectionPoint returns success if the role
+# is already installed on the target.
+
+- name: Install SCP on slab-pss
+  hosts: slab-pss
+  gather_facts: false
+  tasks:
+    - name: Add Service Connection Point role
+      ansible.windows.win_powershell:
+        script: |
+          $env:SMS_ADMIN_UI_PATH = "C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole\bin"
+          Import-Module "$env:SMS_ADMIN_UI_PATH\ConfigurationManager.psd1" -ErrorAction Stop
+          # See 60_upgrade_sccm.yml comment: CM PSDrive must be registered
+          # explicitly in every win_powershell session.
+          if (-not (Get-PSDrive -Name "{{ ludus_sccm_sitecode }}" -PSProvider CMSite -ErrorAction SilentlyContinue)) {
+            $mp = (Get-ItemProperty 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\ConfigMgr10\AdminUI\Connection' -Name Server).Server
+            New-PSDrive -Name "{{ ludus_sccm_sitecode }}" -PSProvider CMSite -Root $mp -Scope Script | Out-Null
+          }
+          Set-Location "{{ ludus_sccm_sitecode }}:\"
+          $fqdn = "{{ inventory_hostname }}.{{ ludus_domain_fqdn }}"
+          # WMI RoleName is 'SMS Dmp Connector' (the internal name for
+          # the Service Connection Point role — the console displays it
+          # as "Service Connection Point"). Older docs and community
+          # examples also mention 'SMS Service Connection Point'; check
+          # either to be robust.
+          $existing = Get-CimInstance -Namespace 'root\SMS\site_{{ ludus_sccm_sitecode }}' -ClassName SMS_SCI_SysResUse -ErrorAction SilentlyContinue |
+            Where-Object { ($_.RoleName -eq 'SMS Dmp Connector' -or $_.RoleName -eq 'SMS Service Connection Point') -and $_.NetworkOSPath -ieq "\\$fqdn" }
+          if ($existing) {
+            $Ansible.Result = @{ already_present = $true; host = $fqdn; role = $existing.RoleName }
+          } else {
+            try {
+              Add-CMServiceConnectionPoint -SiteSystemServerName $fqdn -Mode Online -ErrorAction Stop
+              $Ansible.Result = @{ installed = $true; host = $fqdn }
+            } catch {
+              # Race with sitecomp — if the role was added since our check,
+              # Add-CMServiceConnectionPoint throws "because one already
+              # exists". Treat that as success.
+              if ($_.Exception.Message -match 'already exists') {
+                $Ansible.Result = @{ already_present = $true; host = $fqdn; note = "add returned already-exists" }
+              } else {
+                throw
+              }
+            }
+          }
+      vars:
+        ansible_become: true
+        ansible_become_method: runas
+        ansible_become_user: '{{ ludus_domain_netbios_name }}\{{ defaults.ad_domain_admin }}'
+        ansible_become_password: '{{ defaults.ad_domain_admin_password }}'
+        ansible_become_flags: "logon_type=interactive logon_flags=with_profile"
+      register: r
+
+    - name: Show result
+      ansible.builtin.debug:
+        var: r.result
+
+    - name: Wait for SCP role to appear in WMI
+      ansible.windows.win_powershell:
+        script: |
+          $scp = Get-CimInstance -Namespace 'root\SMS\site_{{ ludus_sccm_sitecode }}' -ClassName SMS_SCI_SysResUse -ErrorAction SilentlyContinue |
+            Where-Object { $_.RoleName -eq 'SMS Dmp Connector' -or $_.RoleName -eq 'SMS Service Connection Point' }
+          $Ansible.Result = @{ present = ($scp -ne $null); host = $scp.NetworkOSPath; role = $scp.RoleName }
+      vars:
+        ansible_become: true
+        ansible_become_method: runas
+        ansible_become_user: '{{ ludus_domain_netbios_name }}\{{ defaults.ad_domain_admin }}'
+        ansible_become_password: '{{ defaults.ad_domain_admin_password }}'
+        ansible_become_flags: "logon_type=interactive logon_flags=with_profile"
+      register: wait_scp
+      until: wait_scp.result.present | bool
+      retries: 30
+      delay: 10
+
+    - name: Confirm SCP present
+      ansible.builtin.debug:
+        msg: "SCP role active on {{ wait_scp.result.host }}"

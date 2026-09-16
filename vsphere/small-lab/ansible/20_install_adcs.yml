@@ -1,0 +1,13 @@
+---
+# Phase 20 — install AD Certificate Services on slab-dc.
+#
+# Installs an Enterprise Root CA with CN "SLAB-CA" using the domain
+# admin credential. Requires DC promoted, forest exists, domainadmin
+# is in Enterprise Admins (all done by phase 05). Reboots at the end
+# via the role's win_reboot task.
+
+- name: install_adcs on slab-dc
+  hosts: slab-dc
+  gather_facts: false
+  roles:
+    - role: mayyhem.ludus_sccm.install_adcs

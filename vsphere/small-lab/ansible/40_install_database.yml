@@ -1,0 +1,16 @@
+---
+# Phase 40 — install SQL Server 2022 on slab-db.
+#
+# Downloads SQLServer2022-x64-ENU.iso (~2 GB) to the controller cache,
+# copies to slab-db, installs SQL with MSSQLSERVER instance, creates
+# the sccmsqlsvc service account, adds slab-pss$ + SLAB\domainadmin
+# to SQL's sysadmin role.
+#
+# Prerequisite: phase 35 has added slab-pss$ to slab-db's local
+# Administrators.
+
+- name: install_site_database on slab-db
+  hosts: slab-db
+  gather_facts: false
+  roles:
+    - role: mayyhem.ludus_sccm.install_site_database

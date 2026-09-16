@@ -1,0 +1,29 @@
+---
+# Phase 50 — install SCCM standalone primary on slab-pss.
+#
+# install_primary_site does:
+#   - Extends AD schema (extadsch.exe).
+#   - Runs unattended setup.exe with the StandaloneSiteConfigMgrSetup.ini
+#     template (the default when ludus_sccm_win_sccm_config_default_template
+#     is not overridden by host_vars — see host_vars/slab-pss/main.yml
+#     which deliberately doesn't override it).
+#   - Then runs cm_accounts, config_naa, client_push, discovery_methods.
+#     PXE is skipped (ludus_sccm_enable_pxe: false in host_vars/slab-pss).
+#   - Includes retry-on-stall logic (3 attempts with reboot between).
+#
+# Unlike the mayyhem lab there is no install_sms, install_passive_site_server,
+# or install_secondary_site — slab is standalone-only.
+
+- name: install_primary_site on slab-pss (standalone; no CAS to extend to)
+  hosts: slab-pss
+  gather_facts: false
+  vars:
+    # The collection's install_primary_site defaults ship three weak
+    # passwords ("password") that don't meet default AD complexity.
+    # Play-level vars take precedence over group_vars during role loop
+    # expansion, so override here.
+    ludus_sccm_client_push_password: "Password123"
+    ludus_sccm_task_sequence_password: "Password123"
+    ludus_sccm_domain_join_password: "Password123"
+  roles:
+    - role: mayyhem.ludus_sccm.install_primary_site
