@@ -101,6 +101,14 @@
         timeout: 300
         sleep: 5
 
+    # ── System settings the template doesn't carry ──────────────────
+    - name: Set timezone to Europe/Oslo
+      # Ubuntu templates default to UTC; workshop runs from Oslo.
+      # Consistent wall clocks across the lab avoid Kerberos-skew
+      # confusion and make log timestamps match everything else.
+      community.general.timezone:
+        name: Europe/Oslo
+
     # ── OS-level prereqs ─────────────────────────────────────────────
     - name: Install prerequisite packages
       # libkrb5-dev + libssl-dev + libffi-dev + python3-dev are needed

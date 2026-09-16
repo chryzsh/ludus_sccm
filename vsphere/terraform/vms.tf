@@ -90,6 +90,14 @@ resource "vsphere_virtual_machine" "mayyhem_vm" {
         content {
           computer_name  = each.value.hostname
           admin_password = var.local_admin_password
+          # Windows customization TimeZone ID 110 = W. Europe Standard
+          # Time (Amsterdam / Berlin / Oslo / Stockholm). Without this
+          # the provider default is 85 (GMT Standard Time, London),
+          # which puts every fresh VM one hour behind Oslo in summer
+          # and creates subtle Kerberos-skew / log-correlation issues.
+          # See misc_set_timezone_oslo.yml for the runtime fix on
+          # already-deployed VMs.
+          time_zone = 110
         }
       }
 
