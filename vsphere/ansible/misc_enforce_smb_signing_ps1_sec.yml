@@ -1,0 +1,220 @@
+---
+# Enforce SMB signing on ps1-sec (the PS1 secondary site server).
+#
+# Background:
+#   This is the relay target used in a prior ELEVATE-2.1 test — the
+#   host that ntlmrelayx forwarded ps1-pss$'s coerced SMB authentication
+#   to, where ps1-pss$ is local admin (a consequence of ps1-pss having
+#   installed the secondary via New-CMSecondarySite).
+#
+#   The follow-up experiment tests PREVENT-12: does enforcing
+#   `RequireSecuritySignature = 1` on the SMB server side of the relay
+#   target actually kill the ELEVATE-2 SMB relay path, and (open
+#   question) does the same coerced auth still relay to a different
+#   protocol (LDAP/HTTP, ELEVATE-2.2)?
+#
+# Scope (per the lab change request):
+#   - ONLY ps1-sec is modified. Site server, MP, DC, DP, DB are all
+#     untouched, so signing enforcement is the single changing variable.
+#   - Only the server-side setting is changed. Client-side
+#     "Digitally sign communications (always)" is NOT touched — per
+#     PREVENT-12 it doesn't affect this relay path.
+#   - No changes to BlockNTLM, RestrictSendingNTLMTraffic,
+#     RestrictNTLMInDomain, or client-push settings.
+#
+# Approach — registry, not GPO:
+#   Direct registry write on the single host is the smallest, most
+#   surgical intervention. GPO would either (a) require a new dedicated
+#   GPO scoped to a single computer, or (b) touch a Default Domain
+#   Policy that affects other hosts. Registry-only also means reverting
+#   is one Ansible run, not a GPO edit + gpupdate cycle.
+#
+# Idempotent: re-running is a no-op once the reg value is 1 and the
+# LanmanServer service has picked it up.
+#
+# Usage:
+#   ./run.sh misc_enforce_smb_signing_ps1_sec.yml
+
+- name: Enforce SMB signing on ps1-sec
+  hosts: ps1-sec
+  gather_facts: false
+  vars:
+    lanman_params_key: HKLM:\SYSTEM\CurrentControlSet\Services\LanManServer\Parameters
+  tasks:
+    - name: Snapshot RequireSecuritySignature before change
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $v = Get-ItemProperty -Path '{{ lanman_params_key }}' -Name RequireSecuritySignature -ErrorAction SilentlyContinue
+          $Ansible.Result = @{
+            present = [bool]$v
+            value   = if ($v) { [int]$v.RequireSecuritySignature } else { $null }
+          }
+      register: sig_before
+      changed_when: false
+
+    - name: Show pre-change state
+      ansible.builtin.debug:
+        var: sig_before.result
+
+    - name: Set RequireSecuritySignature = 1
+      ansible.windows.win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Services\LanManServer\Parameters
+        name: RequireSecuritySignature
+        data: 1
+        type: dword
+      notify: restart lanmanserver
+
+    # Belt-and-braces: EnableSecuritySignature is the "if the client
+    # requests it, sign" toggle. RequireSecuritySignature=1 already
+    # implies signing is enabled, but explicitly setting Enable=1
+    # matches the settings.dat state that GPO's "Digitally sign
+    # communications (always) = Enabled" applies, so post-change reg
+    # state matches what an auditor would see if the change had been
+    # made via GPO.
+    - name: Set EnableSecuritySignature = 1
+      ansible.windows.win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Services\LanManServer\Parameters
+        name: EnableSecuritySignature
+        data: 1
+        type: dword
+      notify: restart lanmanserver
+
+    - name: Flush handlers so LanmanServer restarts before verification
+      ansible.builtin.meta: flush_handlers
+
+    - name: Verify RequireSecuritySignature reads 1 post-change
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $req = (Get-ItemProperty -Path '{{ lanman_params_key }}' -Name RequireSecuritySignature).RequireSecuritySignature
+          $enb = (Get-ItemProperty -Path '{{ lanman_params_key }}' -Name EnableSecuritySignature).EnableSecuritySignature
+          $svc = Get-Service -Name LanmanServer
+          $Ansible.Result = @{
+            require_security_signature = [int]$req
+            enable_security_signature  = [int]$enb
+            lanmanserver_status        = $svc.Status.ToString()
+          }
+          if ([int]$req -ne 1) { throw "RequireSecuritySignature is $req, expected 1" }
+      register: sig_after
+      changed_when: false
+
+    - name: Show post-change state
+      ansible.builtin.debug:
+        var: sig_after.result
+
+    # Confirm ps1-pss$ is still local admin on ps1-sec. The lab change
+    # request explicitly asks for this because signing enforcement
+    # shouldn't touch group membership, but a paranoid double-check is
+    # cheap and it's exactly the assumption the follow-up relay test
+    # depends on.
+    - name: Confirm ps1-pss$ is still local admin on ps1-sec
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $members = Get-LocalGroupMember -Group Administrators |
+            ForEach-Object { $_.Name }
+          $siteServer = 'MAYYHEM\ps1-pss$'
+          $Ansible.Result = @{
+            administrators_members = $members
+            ps1_pss_is_admin       = ($members -contains $siteServer)
+          }
+          if ($members -notcontains $siteServer) {
+            throw "Site server machine account $siteServer is NOT in local Administrators on ps1-sec. Signing was still enforced, but the relay test precondition (ps1-pss$ = local admin on relay target) has broken since the previous test — flag this to the operator."
+          }
+      register: admin_check
+      changed_when: false
+
+    - name: Show local Administrators state
+      ansible.builtin.debug:
+        var: admin_check.result
+
+  handlers:
+    - name: restart lanmanserver
+      # LanmanServer only rereads these two values on service start.
+      # A restart is enough — reboot is not required.
+      ansible.windows.win_service:
+        name: LanmanServer
+        state: restarted
+
+
+# Secondary-site replication sanity check.
+#
+# ps1-sec replicates from ps1-pss over SMB (file-based) and SQL. Modern
+# Server 2022 both ends will negotiate signing without incident, so this
+# should be a no-op — but if the follow-up ELEVATE-2 relay test comes
+# back "no relay" we need to be sure that's because signing killed the
+# relay path, not because replication (and therefore the whole secondary
+# site) silently broke.
+#
+# Two checks, both from ps1-pss:
+#   1. Signed SMB reachability — Test-Path \\ps1-sec\C$ directly
+#      exercises the SMB path used by file-based replication under the
+#      new signing regime. If this fails, the operator knows the test
+#      target isn't reachable at all and shouldn't blame the relay tool.
+#   2. WMI replication link state via SMS_SiteToSiteConnectionInfo in
+#      the site provider namespace. If the class query fails (module
+#      unavailable, provider transient), we log the failure rather than
+#      hard-fail — the SMB check is the more diagnostic of the two.
+- name: Sanity check PS1 → SEC connectivity and replication after signing change
+  hosts: ps1-pss
+  gather_facts: false
+  tasks:
+    - name: Verify signed SMB reachability from ps1-pss to ps1-sec
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $reachable = Test-Path '\\ps1-sec\C$'
+          $Ansible.Result = @{ smb_admin_share_reachable = [bool]$reachable }
+          if (-not $reachable) {
+            throw "\\ps1-sec\C$ is not reachable from ps1-pss after enabling SMB signing on ps1-sec. Secondary-site file replication depends on this path — investigate before running the ELEVATE-2 relay follow-up."
+          }
+      vars:
+        ansible_become: true
+        ansible_become_method: runas
+        ansible_become_user: 'MAYYHEM\domainadmin'
+        ansible_become_password: '{{ defaults.ad_domain_admin_password }}'
+        ansible_become_flags: "logon_type=interactive logon_flags=with_profile"
+      register: smb_check
+      changed_when: false
+
+    - name: Show SMB reachability result
+      ansible.builtin.debug:
+        var: smb_check.result
+
+    - name: Query SMS_SiteToSiteConnectionInfo for PS1 ↔ SEC link status
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Continue'
+          try {
+            $rows = Get-WmiObject -Namespace 'root\SMS\site_PS1' -Class SMS_SiteToSiteConnectionInfo -ErrorAction Stop |
+              Select-Object SiteCode, DestSiteCode, Status
+            $Ansible.Result = @{
+              queried = $true
+              links = @($rows | ForEach-Object {
+                @{
+                  from   = $_.SiteCode
+                  to     = $_.DestSiteCode
+                  status = $_.Status
+                }
+              })
+            }
+          } catch {
+            $Ansible.Result = @{
+              queried = $false
+              error   = $_.Exception.Message
+              note    = 'SMS_SiteToSiteConnectionInfo query failed; verify replication manually in the SCCM console (Monitoring → Site Hierarchy).'
+            }
+          }
+      vars:
+        ansible_become: true
+        ansible_become_method: runas
+        ansible_become_user: 'MAYYHEM\domainadmin'
+        ansible_become_password: '{{ defaults.ad_domain_admin_password }}'
+        ansible_become_flags: "logon_type=interactive logon_flags=with_profile"
+      register: repl_status
+      changed_when: false
+
+    - name: Show replication link state
+      ansible.builtin.debug:
+        var: repl_status.result
