@@ -8,9 +8,14 @@
 # picks it up.
 ludus_sccm_site_server_hostname: 'ps1-pss'
 
-# Override create_demo_users' 2-user default: 10 student accounts, all
+# Override create_demo_users' 2-user default: 12 student accounts, all
 # local admin (workshop simplicity — no helpdesk vs. domainuser split),
 # all in Remote Desktop Users so they can RDP.
+#
+# 11 and 12 were added 2026-09-17 mid-workshop: the ubuntu attack tier
+# grew to 12 VMs (.101/.102) but this list was never extended, so those
+# two students had no domain identity and every LDAP-bound tool
+# (sccmhunter find, ldeep) failed with invalidCredentials.
 ludus_sccm_demo_users:
   - { username: student01, password: 'Password123', local_admin: true }
   - { username: student02, password: 'Password123', local_admin: true }
@@ -22,3 +27,5 @@ ludus_sccm_demo_users:
   - { username: student08, password: 'Password123', local_admin: true }
   - { username: student09, password: 'Password123', local_admin: true }
   - { username: student10, password: 'Password123', local_admin: true }
+  - { username: student11, password: 'Password123', local_admin: true }
+  - { username: student12, password: 'Password123', local_admin: true }
