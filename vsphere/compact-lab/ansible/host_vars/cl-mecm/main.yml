@@ -1,0 +1,10 @@
+---
+# cl-mecm — the co-located primary site server + MP + SMS provider.
+# The mayyhem lab splits these across ps1-pss / ps1-mp / ps1-sms; here
+# they run on one host. install_primary_site targets this host.
+#
+# Site DB lives on cl-sql (separate host). The collection's
+# install_primary_site expects to reach the SQL host — confirm the DB
+# host var name against roles/install_primary_site during the deploy pass
+# (mayyhem wires ps1-db as the DB host; the equivalent here is cl-sql).
+ludus_sccm_site_server_hostname: 'cl-mecm'

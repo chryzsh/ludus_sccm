@@ -1,0 +1,52 @@
+---
+# Compact SCCM workshop lab — non-sensitive config for all hosts.
+# Sensitive values (ansible_password, domain admin password) live in
+# group_vars/all/local.yml (gitignored, mode 0600) — same pattern as the
+# mayyhem lab. Copy that file over from the mayyhem lab and adjust.
+
+# ── Domain identity ──────────────────────────────────────────────────
+ludus_domain_fqdn: compact.lab
+ludus_domain_netbios_name: COMPACT
+ludus_domain_fqdn_tail: "{{ ludus_domain_fqdn.split('.', 1)[1] | default('') }}"
+
+# DC inventory hostname — roles that hit AD delegate to this. Must match
+# the inventory host key produced by sync_inventory.py.
+ludus_dc_vm_name: cl-dc
+
+# Controller-side download cache for the collection's site installers.
+ludus_install_directory: /tmp/ludus-sccm-cache
+
+# Site code for the single primary site.
+ludus_sccm_sitecode: CMP
+
+# ── Vulnerability plants — this is what makes it a teaching lab ───────
+# CRED-1: Network Access Account, readable from an enrolled client.
+ludus_sccm_configure_naa: true
+ludus_sccm_naa_username: 'networkaccess'
+
+# ELEVATE-1: client-push installation account + the "SCCM Push Account
+# Local Admin" GPO that makes sccm_push local admin on OU=Servers.
+ludus_sccm_configure_client_push: true
+ludus_sccm_client_push_username: 'sccm_push'
+ludus_sccm_enable_automatic_client_push_installation: true
+
+# EXEC-2 (Proposal D): the Script Approvers role is NOT granted to the
+# NAA here — leave this false. Instead run
+# misc_grant_svc_maint_script_approver.yml so svc_sccm_maint (the CRED-6
+# loot account) is the approver, with the AD-description breadcrumb. See
+# docs/cred6-exec2-design.md (private ops repo).
+ludus_sccm_naa_grant_script_approver: false
+ludus_sccm_script_approver_role_name: 'Script Approvers'
+ludus_sccm_script_approver_source_role: 'Read-only Analyst'
+
+# CRED-6: the DP loot share + svc_sccm_maint plant. The
+# create_dp_loot_share role reads these; svc_sccm_maint becomes local
+# admin on the loot client (cl-client here, not the mayyhem ps1-dev).
+ludus_sccm_dp_loot_client_hostname: 'cl-client'
+# (username/password/description defaults come from the role; the
+# description must match the EXEC-2 breadcrumb — see the role's
+# keep-in-sync note.)
+
+# TAKEOVER-1: leave SMB signing NOT enforced on cl-mecm so coerced auth
+# from cl-client can be relayed to the site server. (No enforce playbook
+# is run against cl-mecm — the mayyhem lab only enforces on ps1-sec.)

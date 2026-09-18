@@ -30,3 +30,12 @@ vsphere/terraform/.terraform.tfstate.lock.info
 ENVIRONMENT.local.md
 *.local.md
 *.local.yml
+
+# Any vsphere sub-lab (compact-lab, small-lab, ...): keep real values out
+# of git. Examples (*.tfvars.example) are NOT matched and stay tracked.
+vsphere/**/*.tfvars
+vsphere/**/*.tfvars.json
+vsphere/**/group_vars/*/local.yml
+vsphere/**/group_vars/*.local.yml
+vsphere/**/host_vars/*/local.yml
+vsphere/**/host_vars/*/*.local.yml

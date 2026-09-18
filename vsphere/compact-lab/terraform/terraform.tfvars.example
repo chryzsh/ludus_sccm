@@ -1,0 +1,42 @@
+# Compact SCCM workshop lab — copy to terraform.tfvars and fill in.
+# terraform.tfvars is gitignored (see repo .gitignore: vsphere/**/*.tfvars).
+# Keep real values (vCenter creds, IPs) out of git.
+
+### vCenter connection ###
+vsphere_server   = "vcenter.example.local"
+vsphere_user     = "CHANGE_ME"
+vsphere_password = "CHANGE_ME"
+vsphere_insecure = true
+
+### vSphere placement ###
+vsphere_datacenter    = "CHANGE_ME"
+vsphere_resource_pool = "Resources"
+vsphere_datastore     = "CHANGE_ME"
+vsphere_network       = "CHANGE_ME"
+# Dedicated folder so the compact lab never mingles with mayyhem/slab.
+vsphere_folder        = "Personal/chrisr/sccm-compact-lab"
+
+### Templates (same families as the mayyhem lab) ###
+vsphere_server_template      = "CHANGE_ME-win2022-template"
+vsphere_workstation_template = "CHANGE_ME-win11-template"
+# No per-student Ubuntu VMs in the compact target lab — leave empty.
+vsphere_linux_template       = ""
+
+### Guest network (guest-customization) ###
+ipv4_netmask = 24
+ipv4_gateway = "CHANGE_ME"
+dns_server   = "CHANGE_ME-dc-ip"     # the compact DC (cl-dc) once it's up
+domain_fqdn  = "compact.lab"
+
+### Naming ###
+lab_prefix           = "clab"        # VMs land as clab-cl-dc, clab-cl-mecm, ...
+local_admin_password = "CHANGE_ME"
+
+### Per-host IPs (all 5 required; must match locals.tf keys) ###
+vm_ips = {
+  "cl-dc"     = "CHANGE_ME"
+  "cl-mecm"   = "CHANGE_ME"
+  "cl-sql"    = "CHANGE_ME"
+  "cl-dp"     = "CHANGE_ME"
+  "cl-client" = "CHANGE_ME"
+}

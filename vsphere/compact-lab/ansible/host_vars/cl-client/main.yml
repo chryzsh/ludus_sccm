@@ -1,0 +1,7 @@
+---
+# cl-client — Win11, CM-enrolled via client push. Setting the site-server
+# hostname is what the client-push machinery keys on (same pattern as the
+# mayyhem lab's ps1-dev / ps1-lab). This host is the CRED-1 source, the
+# TAKEOVER-1 coercion source, the EXEC-2 execution target, and where
+# svc_sccm_maint (CRED-6 loot) is granted local admin.
+ludus_sccm_site_server_hostname: 'cl-mecm'

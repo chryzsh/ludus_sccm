@@ -1,0 +1,38 @@
+---
+# Compact SCCM workshop lab — full build.
+#
+# Phase sequence modelled on the slab lab's proven pipeline
+# (vsphere/small-lab/ansible/site.yml), with the compact lab's extra
+# hosts (cl-dp, cl-client) and the vulnerability-plant phases added.
+#
+# ⚠ SCAFFOLD: the numbered phase playbooks referenced below are the
+# slab/mayyhem pipeline and are NOT yet copied onto this branch. Bring
+# them in and adapt host targeting for the compact hosts (see
+# README.md → "Building the pipeline"). The vulnerable behaviour is
+# driven by group_vars/all/main.yml; the CRED-6 and EXEC-2 plants live
+# on separate feature branches and must be merged in (README → prereqs).
+#
+# Skip a phase by commenting its import_playbook line.
+
+- import_playbook: 00_connectivity.yml        # win_ping every host
+- import_playbook: 05_ad_forest.yml           # promote cl-dc, create domainadmin
+- import_playbook: 10_windows_base.yml        # windows_base on all hosts
+- import_playbook: 11_grow_partitions.yml     # extend C: to full VMDK
+- import_playbook: 15_domain_join.yml         # join cl-mecm, cl-sql, cl-dp, cl-client
+- import_playbook: 20_install_adcs.yml        # ADCS on cl-dc
+- import_playbook: 30_prep_site_systems.yml   # prep_siteserver on cl-mecm (+ cl-dp)
+- import_playbook: 35_admin_plumbing.yml      # add_pss_to_admins on cl-sql
+- import_playbook: 40_install_database.yml    # SQL on cl-sql
+- import_playbook: 50_install_primary.yml     # standalone primary on cl-mecm
+                                              #   -> configures NAA (CRED-1),
+                                              #      client push + "SCCM Push Account
+                                              #      Local Admin" GPO (ELEVATE-1)
+# ── Distribution point + PXE on cl-dp ────────────────────────────────
+- import_playbook: 52_install_dp.yml          # DP role + PXE on cl-dp (adapt from mayyhem)
+# ── Enrol the client so CRED-1 / coercion / EXEC-2 targets exist ─────
+- import_playbook: 54_enroll_client.yml       # ensure cl-client is a CM client
+# ── Vulnerability plants ─────────────────────────────────────────────
+- import_playbook: misc_plant_cred6_share.yml            # CRED-6 (feat/cred-6-plant / create_dp_loot_share)
+- import_playbook: misc_grant_svc_maint_script_approver.yml  # EXEC-2 Proposal D (feat/exec-2-svc-maint)
+# ── Verify ───────────────────────────────────────────────────────────
+- import_playbook: 70_verify.yml              # SQL up, site present, SMS provider WMI
