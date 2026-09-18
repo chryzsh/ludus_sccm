@@ -112,9 +112,10 @@ def _emit_inventory(vms: dict[str, dict], domain: str) -> str:
             # the Windows WinRM tier. It leaks into the SSH connection
             # for these ubuntu hosts unless overridden AT A HIGHER
             # PRECEDENCE than group_vars/all — inline inventory vars
-            # aren't enough. Any playbook targeting students_tier must
-            # override `ansible_password: ""` at play level (see
-            # misc_provision_ubuntu_students.yml). Key-only auth here.
+            # aren't enough (inventory file group vars rank below
+            # inventory group_vars/all). The override therefore lives in
+            # group_vars/students_tier.yml, which outranks it and covers
+            # playbooks and ad-hoc alike. Key-only auth here.
             "    students_tier:\n"
             "      vars:\n"
             "        ansible_connection: ssh\n"

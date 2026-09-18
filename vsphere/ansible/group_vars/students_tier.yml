@@ -1,0 +1,17 @@
+---
+# The ubuntu student tier is SSH key-only (~/opt/keys/id_ecdsa).
+#
+# group_vars/all/local.yml sets `ansible_password` for the Windows WinRM
+# tier, and it leaks into these hosts' SSH connection: ansible then tries
+# password auth and dies with "you must install the sshpass program".
+#
+# Inline inventory vars can't fix that — inventory *file* group vars rank
+# BELOW inventory group_vars/all in Ansible's precedence order. A
+# group-specific group_vars file ranks above it, so this is the lowest
+# place the override actually sticks.
+#
+# Playbooks that set `ansible_password: ""` at play level (e.g.
+# misc_provision_ubuntu_students.yml) were working around the same thing;
+# with this file they no longer have to, and ad-hoc commands against the
+# students tier work without a manual -e override.
+ansible_password: ""
