@@ -1,0 +1,133 @@
+---
+# Egress-lock the ubuntu student attack VMs to the lab subnet only.
+#
+# Why (2026-09-17 workshop review, safety finding): students pointed
+# tools at out-of-scope / public addresses (a public IP via pxehacker,
+# 1.2.3.4, another lab's 10.10.100.x, etc.) — copy-paste noise, but the
+# student boxes shouldn't be able to initiate connections outside the
+# lab. This makes an accidental wrong-target attack fail with
+# connection-refused instead of reaching something real.
+#
+# Model: OUTPUT may only initiate to the lab CIDR(s); loopback and
+# replies to inbound connections (ESTABLISHED,RELATED) stay open so
+# ansible/SSH management from the controller keeps working. INPUT is left
+# ACCEPT (management SSH is inbound). IPv6 egress is dropped entirely
+# (lab is v4-only) so it can't be a bypass. Rules persist across reboot
+# via netfilter-persistent.
+#
+# Reversible: to unlock a box, `sudo netfilter-persistent flush` (until
+# reboot) or set student_egress_locked=false and re-run (writes
+# accept-all rule files), then reboot / reload. Run this AFTER
+# provisioning (it blocks github/pypi, which the toolkit install needs).
+#
+# Usage:
+#   ./run.sh misc_egress_lock_ubuntu_students.yml
+#   ./run.sh misc_egress_lock_ubuntu_students.yml -e student_egress_locked=false   # unlock
+
+- name: Egress-lock ubuntu student VMs to the lab subnet
+  hosts: students_tier
+  become: true
+  gather_facts: false
+  vars:
+    # Everything the student box is allowed to INITIATE connections to.
+    # Lab is 10.112.0.0/24 (dc/site systems/clients + the student tier).
+    student_egress_allowed_cidrs:
+      - '10.112.0.0/24'
+    # Flip to false to write accept-all rule files (effective unlock on
+    # next reload/reboot).
+    student_egress_locked: true
+
+  tasks:
+    - name: Preseed iptables-persistent (don't prompt to save current rules)
+      ansible.builtin.debconf:
+        name: iptables-persistent
+        question: "iptables-persistent/{{ item }}"
+        vtype: boolean
+        value: "false"
+      loop:
+        - autosave_v4
+        - autosave_v6
+
+    - name: Install iptables + netfilter-persistent
+      ansible.builtin.apt:
+        name:
+          - iptables
+          - iptables-persistent
+          - netfilter-persistent
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Ensure /etc/iptables exists
+      ansible.builtin.file:
+        path: /etc/iptables
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Write IPv4 rules
+      ansible.builtin.copy:
+        dest: /etc/iptables/rules.v4
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          # ANSIBLE-MANAGED — misc_egress_lock_ubuntu_students.yml
+          *filter
+          :INPUT ACCEPT [0:0]
+          :FORWARD DROP [0:0]
+          :OUTPUT ACCEPT [0:0]
+          -A OUTPUT -o lo -j ACCEPT
+          -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+          {% if student_egress_locked %}
+          {% for cidr in student_egress_allowed_cidrs %}
+          -A OUTPUT -d {{ cidr }} -j ACCEPT
+          {% endfor %}
+          -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited
+          {% else %}
+          # UNLOCKED — all egress permitted
+          -A OUTPUT -j ACCEPT
+          {% endif %}
+          COMMIT
+      notify: reload netfilter
+
+    - name: Write IPv6 rules (lab is v4-only; drop v6 egress so it can't bypass)
+      ansible.builtin.copy:
+        dest: /etc/iptables/rules.v6
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          # ANSIBLE-MANAGED — misc_egress_lock_ubuntu_students.yml
+          *filter
+          :INPUT ACCEPT [0:0]
+          :FORWARD DROP [0:0]
+          :OUTPUT ACCEPT [0:0]
+          -A OUTPUT -o lo -j ACCEPT
+          -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+          {% if student_egress_locked %}
+          -A OUTPUT -j DROP
+          {% else %}
+          -A OUTPUT -j ACCEPT
+          {% endif %}
+          COMMIT
+      notify: reload netfilter
+
+    - name: Enable netfilter-persistent (load rules on boot)
+      ansible.builtin.systemd:
+        name: netfilter-persistent
+        enabled: true
+
+  handlers:
+    - name: reload netfilter
+      # Applying the lock resets the controller's own in-flight SSH
+      # session (the controller is outside the allowed CIDR), so a
+      # synchronous reload wedges this very play. Fire it a few seconds
+      # out via a transient systemd unit and return immediately — ansible
+      # disconnects cleanly, then the lock lands out-of-band. (On boot,
+      # netfilter-persistent loads the same rule files directly.)
+      ansible.builtin.command: >-
+        systemd-run --on-active=5 --unit=egress-lock-reload --collect
+        netfilter-persistent reload
+      changed_when: true
