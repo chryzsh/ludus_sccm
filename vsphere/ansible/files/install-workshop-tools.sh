@@ -45,7 +45,8 @@ log "Installing OS prerequisites (sudo)…"
 sudo apt-get update -qq
 sudo apt-get install -y -qq \
   git curl ca-certificates python3 python3-venv python3-pip python3-dev \
-  build-essential libkrb5-dev libssl-dev libffi-dev
+  build-essential libkrb5-dev libssl-dev libffi-dev \
+  ruby ruby-dev   # ruby for evil-winrm
 
 # ── uv ───────────────────────────────────────────────────────────────
 if [ ! -x "$UV" ]; then
@@ -99,6 +100,12 @@ log "Installing netexec (nxc) as an isolated uv tool …"
   && echo "    nxc -> $HOME/.local/bin/nxc" \
   || warn "netexec install had issues — retry: uv tool install netexec"
 
+# ── evil-winrm (ruby gem) — a dedicated WinRM shell for the CRED-6 payoff
+log "Installing evil-winrm (ruby gem, user scope) …"
+gem install --user-install evil-winrm >/dev/null 2>&1 \
+  && echo "    evil-winrm -> $(ruby -e 'print Gem.user_dir')/bin/evil-winrm" \
+  || warn "evil-winrm install had issues — retry: gem install --user-install evil-winrm"
+
 # ── sudo-aware ntlmrelayx shim ───────────────────────────────────────
 # ntlmrelayx binds privileged ports, so it needs root — but root's PATH
 # doesn't see the venv. This shim lets `sudo ntlmrelayx.py …` just work.
@@ -122,6 +129,8 @@ $MARK_BEGIN
 # Auto-activate the pentest venv so ldeep / impacket-* / nxc are on PATH.
 [ -f "\$HOME/venv/pentest/bin/activate" ] && . "\$HOME/venv/pentest/bin/activate"
 case ":\$PATH:" in *":\$HOME/.local/bin:"*) ;; *) export PATH="\$HOME/.local/bin:\$PATH";; esac
+# ruby gem user bin (evil-winrm)
+command -v ruby >/dev/null 2>&1 && export PATH="\$(ruby -e 'print Gem.user_dir')/bin:\$PATH"
 # No per-tool aliases on purpose — run cloned tools by path, e.g.
 #   python3 ~/tools/sccmhunter/sccmhunter.py find -u USER -p PASS -d DOMAIN -dc-ip DC_IP
 $MARK_END
@@ -138,6 +147,7 @@ echo "  pentest py:    $("$PENTEST/bin/python" --version 2>&1)"
 echo "  impacket:      $("$PENTEST/bin/python" -c 'import impacket; print(impacket.__version__)' 2>&1 || echo missing)"
 echo "  ldeep:         $("$PENTEST/bin/ldeep" --version 2>&1 | head -1 || echo missing)"
 echo "  nxc:           $("$HOME/.local/bin/nxc" --version 2>&1 | head -1 || echo 'missing (uv tool install netexec)')"
+echo "  evil-winrm:    $(command -v evil-winrm >/dev/null 2>&1 && evil-winrm --version 2>&1 | head -1 || echo 'run: gem install --user-install evil-winrm')"
 echo "  sccmhunter:    $([ -f "$HOME/tools/sccmhunter/sccmhunter.py" ] && echo present || echo missing)"
 echo "  PXEHacker:     $([ -f "$HOME/tools/PXEHacker/pxehacker.py" ] && echo present || echo missing)"
 echo "  RelayInformer: $("$RELAY/bin/relayinformer" --help >/dev/null 2>&1 && echo 'installed (cmd: ~/venv/relayinformer/bin/relayinformer)' || echo missing)"
@@ -152,6 +162,7 @@ How to run things:
   python3 ~/tools/PetitPotam/PetitPotam.py <listener> <target> -u USER -p PASS -d DOMAIN
   ldeep ldap -u USER -p PASS -d DOMAIN -s ldap://DC_IP <query>
   nxc smb TARGET -u USER -p PASS            # (Pwn3d!) = local admin
+  evil-winrm -i TARGET -u USER -p PASS      # interactive shell over WinRM
 
 sudo is needed for ONLY two things (venv-under-sudo is handled for you):
   sudo ntlmrelayx.py -t TARGET -smb2support           # shim on PATH
