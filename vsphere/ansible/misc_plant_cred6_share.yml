@@ -44,7 +44,7 @@
         password_never_expires: true
         state: present
         display_name: SCCM Maintenance Service Account
-        description: 'IT-Ops SCCM client cache maintenance automation. Ticket IT-4419.'
+        description: 'SCCM script deployment approver — client-cache maintenance automation (IT-Ops, ticket IT-4419).'  # keep in sync with EXEC-2 D playbook exec2_grantee_description
       vars:
         ansible_become: true
         ansible_become_method: runas
