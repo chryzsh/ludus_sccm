@@ -1,0 +1,137 @@
+---
+# EXEC-2 lab path, Proposal D — grant the "Script Approvers" role to the
+# CRED-6 service account (svc_sccm_maint) instead of the NAA.
+#
+# Why (from the 2026-09-17 workshop review):
+#   The original EXEC-2 setup hung the Script Approvers role on the NAA
+#   (networkaccess). That is artificial — a network access account is not
+#   a script approver in the wild — and invisible to students: LDAP recon
+#   showed the NAA with only Domain Users membership, so it read as
+#   useless and nobody found the EXEC-2 tie. Moving the role to
+#   svc_sccm_maint fixes both problems:
+#     * svc_sccm_maint is the account students already loot in CRED-6
+#       (the DP `Scripts` share), so CRED-6 -> EXEC-2 becomes one
+#       discoverable chain instead of two disconnected ones.
+#     * A named "SCCM maintenance" service account holding a script role
+#       is believable, and its AD description (set below) is a breadcrumb
+#       an ldeep/LDAP query will surface.
+#     * svc_sccm_maint then teaches two techniques from one looted cred:
+#       COERCE-2 (its local admin on ps1-dev, from CRED-6) and EXEC-2.
+#   The NAA is left realistically minimal — its lesson becomes the correct
+#   one: an NAA's value is in SCCM policy/content (CRED-1), not AD rights.
+#
+# Execution still requires a separate Full Administrator (e.g. via
+# TAKEOVER-1): svc_sccm_maint can approve scripts, not run them. The
+# two-cred chain is intentional — this playbook only moves the *approve*
+# half from the NAA to svc_sccm_maint.
+#
+# What this does, on ps1-pss:
+#   1. Ensure the "Script Approvers" custom role exists.
+#   2. Grant it to MAYYHEM\svc_sccm_maint.
+#   3. Set svc_sccm_maint's AD description to allude to the capability
+#      (the recon breadcrumb).
+#   4. Remove the NAA from SCCM administrative users (it was only ever an
+#      admin for this role), so the role no longer hangs on the NAA.
+#
+# Assumes svc_sccm_maint already exists (created by CRED-6 /
+# create_dp_loot_share). Idempotent — re-running reconciles the same
+# state. To keep the CRED-6 role's default svc_sccm_maint description in
+# sync, update ludus_sccm_dp_loot_user_description in
+# roles/create_dp_loot_share/defaults/main.yml to match exec2_grantee_description
+# below (otherwise a later CRED-6 re-run would overwrite the breadcrumb).
+#
+# Usage:
+#   ./run.sh misc_grant_svc_maint_script_approver.yml
+
+- name: EXEC-2 Script Approver on svc_sccm_maint (Proposal D)
+  hosts: ps1-pss
+  gather_facts: false
+  become: true
+  become_method: runas
+  become_user: '{{ ludus_domain_netbios_name | default("MAYYHEM") }}\{{ defaults.ad_domain_admin }}'
+  become_flags: "logon_type=interactive logon_flags=with_profile"
+  vars:
+    ansible_become_password: '{{ defaults.ad_domain_admin_password }}'
+    # Self-contained (this play does not include install_primary_site, so
+    # its role defaults are not in scope — define what we need here).
+    exec2_role_name: 'Script Approvers'
+    exec2_source_role: 'Read-only Analyst'
+    exec2_site_code: "{{ ludus_sccm_sitecode | default('PS1') }}"
+    exec2_netbios: "{{ ludus_domain_netbios_name | default('MAYYHEM') }}"
+    exec2_dc: "{{ ludus_dc_vm_name | default('dc') }}"
+    exec2_naa_username: "{{ ludus_sccm_naa_username | default('networkaccess') }}"
+    exec2_grantee_username: 'svc_sccm_maint'
+    exec2_grantee_description: >-
+      SCCM script deployment approver — client-cache maintenance
+      automation (IT-Ops, ticket IT-4419).
+
+  tasks:
+    - name: Ensure the Script Approvers security role exists
+      mayyhem.ludus_sccm.create_script_approver_role:
+        name: '{{ exec2_role_name }}'
+        source_role_name: '{{ exec2_source_role }}'
+        site_code: '{{ exec2_site_code }}'
+
+    - name: Grant Script Approvers role to svc_sccm_maint (the CRED-6 loot account)
+      mayyhem.ludus_sccm.add_administrative_user:
+        name: '{{ exec2_netbios }}\{{ exec2_grantee_username }}'
+        role_name: '{{ exec2_role_name }}'
+        site_code: '{{ exec2_site_code }}'
+
+    - name: Breadcrumb — set svc_sccm_maint AD description to allude to script approval
+      microsoft.ad.user:
+        name: '{{ exec2_grantee_username }}'
+        description: '{{ exec2_grantee_description }}'
+        state: present
+      delegate_to: '{{ exec2_dc }}'
+
+    - name: Remove the NAA from SCCM admins (was the old, artificial EXEC-2 grantee)
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module "C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole\bin\ConfigurationManager.psd1"
+          $sc = '{{ exec2_site_code }}'
+          if (-not (Get-PSDrive -Name $sc -PSProvider CMSite -ErrorAction SilentlyContinue)) {
+              $prov = (Get-ItemProperty 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\ConfigMgr10\AdminUI\Connection' -Name Server).Server
+              New-PSDrive -Name $sc -PSProvider CMSite -Root $prov | Out-Null
+          }
+          Set-Location "$($sc):\"
+          $naa = '{{ exec2_netbios }}\{{ exec2_naa_username }}'
+          $u = Get-CMAdministrativeUser -Name $naa -ErrorAction SilentlyContinue
+          if ($u) {
+              Remove-CMAdministrativeUser -Name $naa -Force
+              $Ansible.Result = @{ naa_removed = $true }
+          } else {
+              $Ansible.Result = @{ naa_removed = $false }
+          }
+      register: naa_remove
+
+    - name: Verify — svc_sccm_maint holds the role and the NAA is gone
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module "C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole\bin\ConfigurationManager.psd1"
+          $sc = '{{ exec2_site_code }}'
+          if (-not (Get-PSDrive -Name $sc -PSProvider CMSite -ErrorAction SilentlyContinue)) {
+              $prov = (Get-ItemProperty 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\ConfigMgr10\AdminUI\Connection' -Name Server).Server
+              New-PSDrive -Name $sc -PSProvider CMSite -Root $prov | Out-Null
+          }
+          Set-Location "$($sc):\"
+          $grantee = Get-CMAdministrativeUser -Name '{{ exec2_netbios }}\{{ exec2_grantee_username }}' -ErrorAction SilentlyContinue
+          $naa     = Get-CMAdministrativeUser -Name '{{ exec2_netbios }}\{{ exec2_naa_username }}' -ErrorAction SilentlyContinue
+          $Ansible.Result = @{
+              grantee_exists = [bool]$grantee
+              grantee_roles  = if ($grantee) { @($grantee.RoleNames) } else { @() }
+              naa_still_admin = [bool]$naa
+          }
+          if (-not $grantee) { throw "{{ exec2_grantee_username }} is not an SCCM admin after grant" }
+          if ($grantee.RoleNames -notcontains '{{ exec2_role_name }}') {
+              throw "{{ exec2_grantee_username }} lacks the {{ exec2_role_name }} role: $($grantee.RoleNames -join ', ')"
+          }
+          if ($naa) { throw "NAA {{ exec2_naa_username }} is still an SCCM admin — removal failed" }
+      changed_when: false
+      register: verify
+
+    - name: Show result
+      ansible.builtin.debug:
+        var: verify.result
