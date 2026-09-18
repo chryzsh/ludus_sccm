@@ -129,6 +129,8 @@
           - libssl-dev
           - libffi-dev
           - sudo
+          - ruby       # for evil-winrm
+          - ruby-dev
         state: present
         update_cache: true
         cache_valid_time: 3600
@@ -321,10 +323,59 @@
       register: ldeep_install
       changed_when: "'installed' in (ldeep_install.stderr | default(''))"
 
-    # ── Login UX: activate venv, add aliases ─────────────────────────
-    - name: Auto-activate pentest venv + tool aliases in .bashrc
+    # ── netexec (nxc): isolated so it can't clobber ldeep's ldap3 fork ─
+    - name: Install netexec (nxc) as an isolated uv tool
+      # `uv tool install` gives netexec its own environment and drops
+      # `nxc` on ~/.local/bin, so its pinned ldap3 never touches the
+      # pentest venv (which ldeep's ldap3 dev-fork depends on).
+      ansible.builtin.shell: |
+        set -eu
+        ~/.local/bin/uv tool install --force netexec
+      become: true
+      become_user: "{{ student_username }}"
+      environment:
+        HOME: "/home/{{ student_username }}"
+      register: nxc_install
+      changed_when: "'Installed' in (nxc_install.stdout | default('')) or 'installed' in (nxc_install.stderr | default(''))"
+
+    # ── evil-winrm: a dedicated WinRM shell for the CRED-6 payoff ──────
+    - name: Install evil-winrm (ruby gem, user scope)
+      # svc_sccm_maint (CRED-6 loot) -> WinRM shell on ps1-dev. `nxc winrm`
+      # also works; both installed per request. Idempotent via gem list -i.
+      ansible.builtin.shell: |
+        set -eu
+        gem list -i evil-winrm >/dev/null 2>&1 || gem install --user-install evil-winrm
+      become: true
+      become_user: "{{ student_username }}"
+      environment:
+        HOME: "/home/{{ student_username }}"
+      register: ewr_install
+      changed_when: "'Successfully installed' in (ewr_install.stdout | default(''))"
+
+    # ── sudo-aware ntlmrelayx shim ────────────────────────────────────
+    - name: Install sudo-aware ntlmrelayx.py shim on PATH
+      # ntlmrelayx binds privileged ports (needs root), but root's PATH
+      # doesn't see the student venv — the #1 time-sink in the workshop.
+      # This shim lets `sudo ntlmrelayx.py …` just work. Runs as root
+      # (no become_user override).
+      ansible.builtin.copy:
+        dest: /usr/local/bin/ntlmrelayx.py
+        mode: '0755'
+        owner: root
+        group: root
+        content: |
+          #!/usr/bin/env bash
+          # Ansible-managed: run {{ student_username }}'s venv ntlmrelayx under sudo.
+          exec "/home/{{ student_username }}/venv/pentest/bin/ntlmrelayx.py" "$@"
+      become: true
+
+    # ── Login UX: activate venv (no per-tool aliases) ────────────────
+    - name: Auto-activate pentest venv in .bashrc (no per-tool aliases)
       # blockinfile is idempotent via the marker. Sits at end of the
-      # student's default .bashrc so it wins over anything above.
+      # student's default .bashrc so it wins over anything above. The
+      # marker is unchanged from the old (alias-bearing) version so a
+      # re-run on an already-provisioned box replaces that block in place
+      # and drops the aliases (workshop review finding #6).
       ansible.builtin.blockinfile:
         path: "/home/{{ student_username }}/.bashrc"
         marker: "# {mark} ANSIBLE MANAGED — pentest venv + tool wrappers"
@@ -338,17 +389,15 @@
           if [ -f "$HOME/venv/pentest/bin/activate" ]; then
             . "$HOME/venv/pentest/bin/activate"
           fi
-          # uv itself lives under ~/.local/bin.
+          # uv and uv-tool binaries (incl. nxc) live under ~/.local/bin.
           case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH";; esac
-          # Wrappers for the git-cloned script tools, so students just
-          # type the tool name from anywhere.
-          alias sccmhunter='python "$HOME/tools/sccmhunter/sccmhunter.py"'
-          alias PXEHacker='python "$HOME/tools/PXEHacker/pxehacker.py"'
-          alias PetitPotam='python "$HOME/tools/PetitPotam/PetitPotam.py"'
-          # RelayInformer lives in its own venv (its pinned deps
-          # would fight the shared pentest venv). Alias to that venv's
-          # binary so students still just type `relayinformer`.
-          alias relayinformer='$HOME/venv/relayinformer/bin/relayinformer'
+          # ruby gem user bin (evil-winrm).
+          command -v ruby >/dev/null 2>&1 && export PATH="$(ruby -e 'print Gem.user_dir')/bin:$PATH"
+          # No per-tool aliases on purpose (review finding #6) — run the
+          # cloned tools by path so commands match the Misconfiguration
+          # Manager docs students read, e.g.
+          #   python3 ~/tools/sccmhunter/sccmhunter.py find -u USER -p PASS -d DOMAIN -dc-ip DC_IP
+          # RelayInformer is in its own venv: ~/venv/relayinformer/bin/relayinformer
       become: true
       become_user: "{{ student_username }}"
 
@@ -361,6 +410,9 @@
         echo "venv python:  $(~/venv/pentest/bin/python --version 2>&1)"
         echo "impacket:     $(~/venv/pentest/bin/python -c 'import impacket; print(impacket.__version__)' 2>&1 || echo missing)"
         echo "ldeep:        $(~/venv/pentest/bin/ldeep --version 2>&1 | head -1 || echo missing)"
+        echo "nxc:          $(~/.local/bin/nxc --version 2>&1 | head -1 || echo missing)"
+        echo "evil-winrm:   $(gem list -i evil-winrm >/dev/null 2>&1 && echo present || echo missing)"
+        echo "relay shim:   $([ -x /usr/local/bin/ntlmrelayx.py ] && echo present || echo missing)"
         echo "sccmhunter:     $([ -f ~/tools/sccmhunter/sccmhunter.py ] && echo present || echo missing)"
         echo "PXEHacker:      $([ -f ~/tools/PXEHacker/pxehacker.py ] && echo present || echo missing)"
         echo "RelayInformer:  $(~/venv/relayinformer/bin/relayinformer --help >/dev/null 2>&1 && echo 'installed (isolated venv; cmd: relayinformer)' || echo missing)"
