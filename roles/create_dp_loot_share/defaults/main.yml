@@ -6,7 +6,13 @@
 # is precise.
 ludus_sccm_dp_loot_username: 'svc_sccm_maint'
 ludus_sccm_dp_loot_password: 'Password123!'
-ludus_sccm_dp_loot_user_description: 'IT-Ops SCCM client cache maintenance automation. Ticket IT-4419.'
+# KEEP IN SYNC with exec2_grantee_description in
+# vsphere/ansible/misc_grant_svc_maint_script_approver.yml (EXEC-2
+# Proposal D). Both set this same account's AD description; if they
+# differ, whichever playbook runs last wins and clobbers the EXEC-2
+# recon breadcrumb. The "script deployment approver" wording is the
+# breadcrumb that ties CRED-6 to EXEC-2.
+ludus_sccm_dp_loot_user_description: 'SCCM script deployment approver — client-cache maintenance automation (IT-Ops, ticket IT-4419).'
 
 # Client host that receives local-admin membership for the planted
 # account. This is the CRED-6 payoff — student loots the cred from the
